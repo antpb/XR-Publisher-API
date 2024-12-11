@@ -1,8 +1,10 @@
 # World and Character Management System
 
 If this helps you and you want to tip to fund future development, feel free to use the following wallet addresses
-SOL: 5h7YzknKdQKA9QxiZKdt3X5JpjVAyoTEQUroaRGuphAx
-ETH: 0x94899E0Cc3115D7761EeCd9bBc04D8eBff9de871
+
+### SOL: 5h7YzknKdQKA9QxiZKdt3X5JpjVAyoTEQUroaRGuphAx
+
+### ETH: 0x94899E0Cc3115D7761EeCd9bBc04D8eBff9de871
 
 ## Overview
 
