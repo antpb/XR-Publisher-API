@@ -2,3 +2,4 @@
 .wrangler/
 wrangler.toml
 node_modules/
+dist/
