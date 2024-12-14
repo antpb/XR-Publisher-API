@@ -1,0 +1,827 @@
+{
+  "name": "Plugin Publisher API",
+  "version": "1",
+  "items": [
+    {
+      "type": "folder",
+      "name": "Authentication",
+      "root": {
+        "meta": {
+          "name": "Authentication"
+        }
+      },
+      "items": [
+        {
+          "type": "http",
+          "name": "Create User",
+          "seq": 1,
+          "request": {
+            "url": "{{baseUrl}}/create-user",
+            "method": "POST",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "enabled": true
+              }
+            ],
+            "params": [],
+            "body": {
+              "mode": "json",
+              "json": "{\n  \"username\": \"testuser\",\n  \"inviteCode\": \"{{inviteCode}}\",\n  \"github_username\": \"githubuser\",\n  \"email\": \"user@example.com\"\n}",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Initiate Key Roll",
+          "seq": 3,
+          "request": {
+            "url": "{{baseUrl}}/initiate-key-roll",
+            "method": "POST",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "enabled": true
+              }
+            ],
+            "params": [],
+            "body": {
+              "mode": "json",
+              "json": "{\n  \"username\": \"{{username}}\",\n  \"email\": \"{{email}}\"\n}",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Rotate API Key",
+          "seq": 2,
+          "request": {
+            "url": "{{baseUrl}}/rotate-key",
+            "method": "POST",
+            "headers": [
+              {
+                "name": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "enabled": true
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "enabled": true
+              }
+            ],
+            "params": [],
+            "body": {
+              "mode": "json",
+              "json": "{\n  \"username\": \"{{username}}\",\n  \"currentApiKey\": \"{{apiKey}}\"\n}",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Verify Key Roll",
+          "seq": 4,
+          "request": {
+            "url": "{{baseUrl}}/verify-key-roll",
+            "method": "POST",
+            "headers": [
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "enabled": true
+              }
+            ],
+            "params": [],
+            "body": {
+              "mode": "json",
+              "json": "{\n  \"gistUrl\": \"https://gist.github.com/username/gistid\",\n  \"verificationToken\": \"{{verificationToken}}\"\n}",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "folder",
+      "name": "Author Management",
+      "root": {
+        "meta": {
+          "name": "Author Management"
+        }
+      },
+      "items": [
+        {
+          "type": "http",
+          "name": "Delete Author",
+          "seq": 2,
+          "request": {
+            "url": "{{baseUrl}}/delete-author",
+            "method": "POST",
+            "headers": [
+              {
+                "name": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "enabled": true
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "enabled": true
+              }
+            ],
+            "params": [],
+            "body": {
+              "mode": "json",
+              "json": "{\n  \"authorName\": \"{{username}}\"\n}",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Update Author Info",
+          "seq": 1,
+          "request": {
+            "url": "{{baseUrl}}/update-author-info",
+            "method": "POST",
+            "headers": [
+              {
+                "name": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "enabled": true
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "enabled": true
+              }
+            ],
+            "params": [],
+            "body": {
+              "mode": "json",
+              "json": "{\n  \"userId\": \"{{username}}\",\n  \"pluginName\": \"{{pluginName}}\",\n  \"authorData\": {\n    \"username\": \"{{username}}\",\n    \"email\": \"{{email}}\",\n    \"avatar_url\": \"https://example.com/avatar.jpg\",\n    \"bio\": \"Developer bio\",\n    \"website\": \"https://example.com\",\n    \"twitter\": \"twitterhandle\",\n    \"github\": \"githubhandle\"\n  }\n}",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "folder",
+      "name": "Cache Management",
+      "root": {
+        "meta": {
+          "name": "Cache Management"
+        }
+      },
+      "items": [
+        {
+          "type": "http",
+          "name": "Clear Cache -Authenticated-",
+          "seq": 1,
+          "request": {
+            "url": "{{baseUrl}}/clear-cache",
+            "method": "POST",
+            "headers": [
+              {
+                "name": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "enabled": true
+              }
+            ],
+            "params": [],
+            "body": {
+              "mode": "none",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Clear Cache -Public-",
+          "seq": 2,
+          "request": {
+            "url": "{{baseUrl}}/clear-cache",
+            "method": "GET",
+            "headers": [],
+            "params": [],
+            "body": {
+              "mode": "none",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "folder",
+      "name": "Plugin Data",
+      "root": {
+        "meta": {
+          "name": "Plugin Data"
+        }
+      },
+      "items": [
+        {
+          "type": "http",
+          "name": "Get Author Data",
+          "seq": 2,
+          "request": {
+            "url": "{{baseUrl}}/author-data?author={{username}}",
+            "method": "GET",
+            "headers": [],
+            "params": [
+              {
+                "name": "author",
+                "value": "{{username}}",
+                "type": "query",
+                "enabled": true
+              }
+            ],
+            "body": {
+              "mode": "none",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Get Plugin Data",
+          "seq": 1,
+          "request": {
+            "url": "{{baseUrl}}/plugin-data?author={{username}}&slug={{pluginSlug}}",
+            "method": "GET",
+            "headers": [],
+            "params": [
+              {
+                "name": "author",
+                "value": "{{username}}",
+                "type": "query",
+                "enabled": true
+              },
+              {
+                "name": "slug",
+                "value": "{{pluginSlug}}",
+                "type": "query",
+                "enabled": true
+              }
+            ],
+            "body": {
+              "mode": "none",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "folder",
+      "name": "Plugin Management",
+      "root": {
+        "meta": {
+          "name": "Plugin Management"
+        }
+      },
+      "items": [
+        {
+          "type": "http",
+          "name": "Backup Plugin",
+          "seq": 6,
+          "request": {
+            "url": "{{baseUrl}}/backup-plugin",
+            "method": "POST",
+            "headers": [
+              {
+                "name": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "enabled": true
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "enabled": true
+              }
+            ],
+            "params": [],
+            "body": {
+              "mode": "json",
+              "json": "{\n  \"author\": \"{{username}}\",\n  \"slug\": \"{{pluginSlug}}\",\n  \"version\": \"1.0.0\"\n}",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Finalize Plugin Upload",
+          "seq": 4,
+          "request": {
+            "url": "{{baseUrl}}/plugin-upload-complete",
+            "method": "POST",
+            "headers": [
+              {
+                "name": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "enabled": true
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "enabled": true
+              }
+            ],
+            "params": [],
+            "body": {
+              "mode": "json",
+              "json": "{\n  \"userId\": \"{{username}}\",\n  \"pluginName\": \"{{pluginName}}\",\n  \"metadata\": {\n    \"name\": \"Example Plugin\",\n    \"version\": \"1.0.0\",\n    \"short_description\": \"A sample plugin description\",\n    \"tags\": [\"example\", \"test\"]\n  }\n}",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Upload Plugin Assets",
+          "seq": 3,
+          "request": {
+            "url": "{{baseUrl}}/plugin-upload-assets",
+            "method": "POST",
+            "headers": [
+              {
+                "name": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "enabled": true
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "enabled": true
+              }
+            ],
+            "params": [],
+            "body": {
+              "mode": "json",
+              "json": "{\n  \"userId\": \"{{username}}\",\n  \"pluginName\": \"{{pluginName}}\",\n  \"fileName\": \"icon-256x256.jpg\",\n  \"fileData\": \"{{base64ImageData}}\",\n  \"assetType\": \"icon\"\n}",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Upload Plugin Chunk",
+          "seq": 1,
+          "request": {
+            "url": "{{baseUrl}}/plugin-upload-chunk",
+            "method": "POST",
+            "headers": [
+              {
+                "name": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "enabled": true
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "enabled": true
+              }
+            ],
+            "params": [],
+            "body": {
+              "mode": "json",
+              "json": "{\n  \"userId\": \"{{username}}\",\n  \"pluginName\": \"{{pluginName}}\",\n  \"fileData\": \"{{base64ChunkData}}\",\n  \"chunkNumber\": 1,\n  \"totalChunks\": 3\n}",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Upload Plugin JSON",
+          "seq": 2,
+          "request": {
+            "url": "{{baseUrl}}/plugin-upload-json",
+            "method": "POST",
+            "headers": [
+              {
+                "name": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "enabled": true
+              },
+              {
+                "name": "Content-Type",
+                "value": "application/json",
+                "enabled": true
+              }
+            ],
+            "params": [],
+            "body": {
+              "mode": "json",
+              "json": "{\n  \"userId\": \"{{username}}\",\n  \"pluginName\": \"{{pluginName}}\",\n  \"jsonData\": {\n    \"name\": \"Example Plugin\",\n    \"version\": \"1.0.0\",\n    \"short_description\": \"A sample plugin description\",\n    \"tags\": [\"example\", \"test\"],\n    \"contributors\": {\n      \"{{username}}\": {\n        \"profile\": \"https://example.com\",\n        \"avatar\": \"https://example.com/avatar.jpg\",\n        \"display_name\": \"Test User\"\n      }\n    }\n  }\n}",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Version Check",
+          "seq": 5,
+          "request": {
+            "url": "{{baseUrl}}/version-check?author={{username}}&pluginName={{pluginName}}&newVersion=1.1.0",
+            "method": "GET",
+            "headers": [],
+            "params": [
+              {
+                "name": "author",
+                "value": "{{username}}",
+                "type": "query",
+                "enabled": true
+              },
+              {
+                "name": "pluginName",
+                "value": "{{pluginName}}",
+                "type": "query",
+                "enabled": true
+              },
+              {
+                "name": "newVersion",
+                "value": "1.1.0",
+                "type": "query",
+                "enabled": true
+              }
+            ],
+            "body": {
+              "mode": "none",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "folder",
+      "name": "Search",
+      "root": {
+        "meta": {
+          "name": "Search"
+        }
+      },
+      "items": [
+        {
+          "type": "http",
+          "name": "Search worlds",
+          "seq": 1,
+          "request": {
+            "url": "{{baseUrl}}/search?q={{searchQuery}}&tag={{tag}}&limit={{limit}}&offset={{offset}}",
+            "method": "GET",
+            "headers": [],
+            "params": [
+              {
+                "name": "q",
+                "value": "{{searchQuery}}",
+                "type": "query",
+                "enabled": true
+              },
+              {
+                "name": "tag",
+                "value": "{{tag}}",
+                "type": "query",
+                "enabled": true
+              },
+              {
+                "name": "limit",
+                "value": "20",
+                "type": "query",
+                "enabled": true
+              },
+              {
+                "name": "offset",
+                "value": "0",
+                "type": "query",
+                "enabled": true
+              }
+            ],
+            "body": {
+              "mode": "none",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Search Results Page",
+          "seq": 2,
+          "request": {
+            "url": "{{baseUrl}}/directory/search?q={{searchQuery}}&tag={{tag}}&limit={{limit}}&offset={{offset}}",
+            "method": "GET",
+            "headers": [],
+            "params": [
+              {
+                "name": "q",
+                "value": "{{searchQuery}}",
+                "type": "query",
+                "enabled": true
+              },
+              {
+                "name": "tag",
+                "value": "{{tag}}",
+                "type": "query",
+                "enabled": true
+              },
+              {
+                "name": "limit",
+                "value": "20",
+                "type": "query",
+                "enabled": true
+              },
+              {
+                "name": "offset",
+                "value": "0",
+                "type": "query",
+                "enabled": true
+              }
+            ],
+            "body": {
+              "mode": "none",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        }
+      ]
+    },
+    {
+      "type": "folder",
+      "name": "Statistics",
+      "root": {
+        "meta": {
+          "name": "Statistics"
+        }
+      },
+      "items": [
+        {
+          "type": "http",
+          "name": "Download Plugin",
+          "seq": 1,
+          "request": {
+            "url": "{{baseUrl}}/download?author={{username}}&slug={{pluginSlug}}",
+            "method": "GET",
+            "headers": [],
+            "params": [
+              {
+                "name": "author",
+                "value": "{{username}}",
+                "type": "query",
+                "enabled": true
+              },
+              {
+                "name": "slug",
+                "value": "{{pluginSlug}}",
+                "type": "query",
+                "enabled": true
+              }
+            ],
+            "body": {
+              "mode": "none",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Get Download Count",
+          "seq": 2,
+          "request": {
+            "url": "{{baseUrl}}/download-count?author={{username}}&slug={{pluginSlug}}",
+            "method": "GET",
+            "headers": [],
+            "params": [
+              {
+                "name": "author",
+                "value": "{{username}}",
+                "type": "query",
+                "enabled": true
+              },
+              {
+                "name": "slug",
+                "value": "{{pluginSlug}}",
+                "type": "query",
+                "enabled": true
+              }
+            ],
+            "body": {
+              "mode": "none",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        },
+        {
+          "type": "http",
+          "name": "Record Activation",
+          "seq": 3,
+          "request": {
+            "url": "{{baseUrl}}/activate?author={{username}}&slug={{pluginSlug}}",
+            "method": "GET",
+            "headers": [],
+            "params": [
+              {
+                "name": "author",
+                "value": "{{username}}",
+                "type": "query",
+                "enabled": true
+              },
+              {
+                "name": "slug",
+                "value": "{{pluginSlug}}",
+                "type": "query",
+                "enabled": true
+              }
+            ],
+            "body": {
+              "mode": "none",
+              "formUrlEncoded": [],
+              "multipartForm": []
+            },
+            "script": {},
+            "vars": {},
+            "assertions": [],
+            "tests": "",
+            "auth": {
+              "mode": "none"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "environments": [],
+  "brunoConfig": {
+    "version": "1",
+    "name": "Plugin Publisher API",
+    "type": "collection",
+    "ignore": [
+      "node_modules",
+      ".git"
+    ]
+  }
+}

@@ -1,4 +1,12 @@
 import { EnhancedSQLiteMemoryAdapter } from './EnhancedSQLiteMemoryAdapter.js';
+import { initializeWorkerCompat } from './WorkerCompatibilityLayer.js';
+
+const CORS_HEADERS = {
+	'Access-Control-Allow-Origin': '*',
+	'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
+	'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+	'Access-Control-Max-Age': '86400',
+};
 
 class NonceManager {
 	constructor(sql) {
@@ -97,6 +105,8 @@ export class CharacterRegistryDO {
 	#sessions = new Map();
 	#sessionTimeouts = new Map();
 	constructor(state, env) {
+		// Initialize compatibility layer before anything else
+		initializeWorkerCompat();
 		this.state = state;
 		this.env = env;
 		this.sql = state.storage.sql;
@@ -1304,7 +1314,6 @@ export class CharacterRegistryDO {
 	async getCharacterSecrets(characterId) {
 		try {
 			console.log('Getting secrets for character ID:', characterId);
-			console.log('CHARACTER_SALT available:', !!this.env.CHARACTER_SALT);  // Add this
 
 			if (!characterId) {
 				throw new Error('Character ID is required');
@@ -1417,99 +1426,99 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async initializeCharacterRoom(author, name, roomId) {
-		try {
-			console.log('Initializing session for:', author, name, 'in room:', roomId);
-			const character = await this.getCharacter(author, name);
-			console.log('Character data:', character);
-			if (!character) {
-				throw new Error('Character not found');
-			}
+	// async initializeCharacterRoom(author, name, roomId) {
+	// 	try {
+	// 		console.log('Initializing session for:', author, name, 'in room:', roomId);
+	// 		const character = await this.getCharacter(author, name);
+	// 		console.log('Character data:', character);
+	// 		if (!character) {
+	// 			throw new Error('Character not found');
+	// 		}
 
-			if (!roomId) {
-				throw new Error('Room ID is required');
-			}
+	// 		if (!roomId) {
+	// 			throw new Error('Room ID is required');
+	// 		}
 
-			// Get or create room with provided ID
-			const roomExists = await this.sql.exec(`
-			SELECT id FROM rooms WHERE id = ? LIMIT 1
-		  `, roomId).toArray();
+	// 		// Get or create room with provided ID
+	// 		const roomExists = await this.sql.exec(`
+	// 		SELECT id FROM rooms WHERE id = ? LIMIT 1
+	// 	  `, roomId).toArray();
 
-			if (!roomExists.length) {
-				console.log('Creating new room:', roomId);
-				await this.sql.exec(`
-			  INSERT INTO rooms (
-				id,
-				character_id,
-				created_at,
-				last_active
-			  ) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-			`, roomId, character.id);
-			}
+	// 		if (!roomExists.length) {
+	// 			console.log('Creating new room:', roomId);
+	// 			await this.sql.exec(`
+	// 		  INSERT INTO rooms (
+	// 			id,
+	// 			character_id,
+	// 			created_at,
+	// 			last_active
+	// 		  ) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	// 		`, roomId, character.id);
+	// 		}
 
-			// Initialize runtime
-			const secrets = await this.getCharacterSecrets(character.id);
-			const runtime = await this.initializeRuntime(character, secrets);
+	// 		// Initialize runtime
+	// 		const secrets = await this.getCharacterSecrets(character.id);
+	// 		const runtime = await this.initializeRuntime(character, secrets);
 
-			// Create session
-			const sessionId = crypto.randomUUID();
-			console.log('Creating session with ID:', sessionId);
+	// 		// Create session
+	// 		const sessionId = crypto.randomUUID();
+	// 		console.log('Creating session with ID:', sessionId);
 
-			// Create session record with room ID
-			await this.sql.exec(`
-			INSERT INTO character_sessions (
-			  id,
-			  character_id,
-			  room_id,
-			  created_at,
-			  last_active
-			) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-		  `, sessionId, character.id, roomId);
+	// 		// Create session record with room ID
+	// 		await this.sql.exec(`
+	// 		INSERT INTO character_sessions (
+	// 		  id,
+	// 		  character_id,
+	// 		  room_id,
+	// 		  created_at,
+	// 		  last_active
+	// 		) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+	// 	  `, sessionId, character.id, roomId);
 
-			// Update room's current session
-			await this.sql.exec(`
-			UPDATE rooms 
-			SET current_session_id = ?,
-				last_active = CURRENT_TIMESTAMP 
-			WHERE id = ?
-		  `, sessionId, roomId);
+	// 		// Update room's current session
+	// 		await this.sql.exec(`
+	// 		UPDATE rooms 
+	// 		SET current_session_id = ?,
+	// 			last_active = CURRENT_TIMESTAMP 
+	// 		WHERE id = ?
+	// 	  `, sessionId, roomId);
 
-			// Create nonce for security
-			const { nonce } = await this.nonceManager.createNonce(roomId, sessionId);
+	// 		// Create nonce for security
+	// 		const { nonce } = await this.nonceManager.createNonce(roomId, sessionId);
 
-			// Store runtime in memory
-			this.#sessions.set(roomId, {
-				runtime,
-				character,
-				roomId,
-				lastActive: new Date()
-			});
+	// 		// Store runtime in memory
+	// 		this.#sessions.set(roomId, {
+	// 			runtime,
+	// 			character,
+	// 			roomId,
+	// 			lastActive: new Date()
+	// 		});
 
-			return {
-				roomId,
-				sessionId,
-				nonce,
-				config: {
-					name: character.name,
-					status: character.status || 'private',
-					modelProvider: character.modelProvider,
-					bio: character.bio,
-					vrmUrl: character.vrmUrl,
-					lore: character.lore,
-					style: character.style,
-					adjectives: character.adjectives,
-					topics: character.topics,
-					settings: {
-						...character.settings,
-						secrets: undefined
-					}
-				}
-			};
-		} catch (error) {
-			console.error('Room initialization error:', error);
-			throw error;
-		}
-	}
+	// 		return {
+	// 			roomId,
+	// 			sessionId,
+	// 			nonce,
+	// 			config: {
+	// 				name: character.name,
+	// 				status: character.status || 'private',
+	// 				modelProvider: character.modelProvider,
+	// 				bio: character.bio,
+	// 				vrmUrl: character.vrmUrl,
+	// 				lore: character.lore,
+	// 				style: character.style,
+	// 				adjectives: character.adjectives,
+	// 				topics: character.topics,
+	// 				settings: {
+	// 					...character.settings,
+	// 					secrets: undefined
+	// 				}
+	// 			}
+	// 		};
+	// 	} catch (error) {
+	// 		console.error('Room initialization error:', error);
+	// 		throw error;
+	// 	}
+	// }
 
 
 	// First, add the token estimation utility
@@ -1539,7 +1548,7 @@ export class CharacterRegistryDO {
 		return truncated.slice(0, lastSpace);
 	}
 
-	async initializeSession(sessionId) {
+	async initializeSession(sessionId, updatedCharacter) {
 		try {
 			// Get session with room_id
 			const dbSessions = await this.sql.exec(`
@@ -1559,7 +1568,15 @@ export class CharacterRegistryDO {
 			if (activeSession?.runtime) {
 				return activeSession;
 			}
-
+			if (!activeSession?.runtime) {
+				console.error('Session runtime not initialized:', {
+					hasSession: !!activeSession,
+					sessionId,
+					roomId: activeSession?.roomId
+				});
+				throw new Error('Session runtime not initialized');
+			}
+			
 			// Get character data
 			const characters = await this.sql.exec(`
 			SELECT * 
@@ -1571,10 +1588,14 @@ export class CharacterRegistryDO {
 				throw new Error('Character not found');
 			}
 			const character = characters[0];
-			console.log("Session and character data:", {
-				sessionId: dbSession.id,
-				characterId: character.id
-			});
+			if (updatedCharacter) {
+				character.settings = updatedCharacter.settings;
+			}
+			// console.log("Session and character data:", {
+			// 	sessionId: dbSession.id,
+			// 	characterId: character.id,
+			// 	character
+			// });
 
 			// Create active session with room ID
 			activeSession = {
@@ -1591,13 +1612,16 @@ export class CharacterRegistryDO {
 			// Initialize runtime
 			const runtime = await this.initializeRuntime(character, secrets);
 			activeSession.runtime = runtime;
+			if (updatedCharacter) {
+				activeSession.runtime.settings = updatedCharacter.settings;
+			}
 
 			// Store session using room ID as key
 			this.#sessions.set(dbSession.room_id, activeSession);
 
 			return activeSession;
 		} catch (error) {
-			console.error('Session initialization error:', error);
+			console.error('Char View Session initialization error:', error);
 			throw error;
 		}
 	}
@@ -1813,9 +1837,9 @@ export class CharacterRegistryDO {
 			// const model = character.settings?.model || 'gpt-4o-mini';
 			// const modelProvider = model.toLowerCase().includes('claude') ? 'ANTHROPIC' : 'OPENAI';
 			const model = 'gpt-4o-mini';
-			const modelProvider = 'OPENAI';
+			const modelProvider = 'openai';
 			const token = modelProvider === 'ANTHROPIC' ? secrets.modelKeys.anthropic : secrets.modelKeys.openai;
-
+			console.log("character in init is", character);
 			const config = {
 				agentId: character.id || crypto.randomUUID(),
 				serverUrl: 'http://localhost:7998',
@@ -1972,8 +1996,7 @@ export class CharacterRegistryDO {
 			return [];
 		}
 	}
-
-	async handleMessage(sessionId, message, nonce = null, apiKey = null) { // Add apiKey parameter
+	async handleWorldMessage(sessionId, message, nonce = null, apiKey = null) { // Add apiKey parameter
 		try {
 			console.log("Starting message handling with:", { sessionId, nonce });
 
@@ -2078,6 +2101,149 @@ export class CharacterRegistryDO {
 					reject(error);
 				}
 			});
+
+			const responseText = aiResponse?.[0]?.content?.text || 'No response generated';
+
+			// Store AI response
+			const aiMemoryData = {
+				id: crypto.randomUUID(),
+				type: 'message',
+				content: {
+					text: responseText,
+					model: 'gpt-4o-mini',
+					action: 'RESPOND'
+				},
+				userId: null, // AI has no user ID
+				userName: activeSession.character.name, // Use character name for AI responses
+				roomId: activeSession.roomId,
+				agentId: activeSession.character.id,
+				createdAt: Date.now()
+			};
+
+			await this.state.storage.transaction(async (txn) => {
+				await activeSession.runtime.databaseAdapter.createMemory(aiMemoryData);
+			});
+
+			// Create new nonce
+			const { nonce: newNonce } = await this.nonceManager.createNonce(activeSession.roomId, sessionId);
+
+			return {
+				text: responseText,
+				nonce: newNonce,
+				sessionId: sessionId,
+				roomId: activeSession.roomId
+			};
+
+		} catch (error) {
+			console.error('Message handling error:', error);
+			throw error;
+		}
+	}
+
+	async handleMessage(sessionId, message, nonce = null, apiKey = null) { // Add apiKey parameter
+		try {
+			console.log("Starting message handling with:", { sessionId, nonce });
+
+			// If we have an API key, verify it and get user info
+			let userInfo = null;
+			if (apiKey) {
+				const id = this.env.USER_AUTH.idFromName("global");
+				const auth = this.env.USER_AUTH.get(id);
+
+				// Verify API key for thing
+				const verifyResponse = await auth.fetch(new Request('http://internal/verify-key', {
+					method: 'POST',
+					body: JSON.stringify({ apiKey })
+				}));
+
+				const verifyResult = await verifyResponse.json();
+
+				console.log("verified reponse is", verifyResult);
+
+				if (verifyResult.valid) {
+					const username = verifyResult.username;
+					if (username) {
+						userInfo = { userId: username, userName: username };
+					}
+				}
+			}
+
+			// Rest of your existing nonce validation code...
+			if (nonce) {
+				const isValid = await this.nonceManager.validateNonce(sessionId, nonce);
+				if (!isValid) {
+					const newSession = await this.initializeSession(sessionId);
+					if (!newSession) {
+						throw new Error('Session initialization failed');
+					}
+					sessionId = newSession.sessionId || newSession.id;
+				}
+			}
+
+			let activeSession = await this.initializeSession(sessionId);
+			if (!activeSession?.roomId) {
+				throw new Error('Session initialization failed - no roomId');
+			}
+
+			// Use authenticated user info if available, otherwise generate guest info
+			const userMemoryData = {
+				id: crypto.randomUUID(),
+				type: 'message',
+				content: {
+					text: message,
+					model: 'gpt-4o-mini'
+				},
+				userId: userInfo?.userId || null,  // Only set for authenticated users
+				userName: userInfo?.userName || `guest-${crypto.randomUUID().slice(0, 8)}`,
+				roomId: activeSession.roomId,
+				agentId: activeSession.character.id,
+				createdAt: Date.now()
+			};
+
+			await this.state.storage.transaction(async (txn) => {
+				await activeSession.runtime.databaseAdapter.createMemory(userMemoryData);
+			});
+			console.log('Starting message processing:', {
+				hasRuntime: !!activeSession?.runtime,
+				hasProcessActions: !!activeSession?.runtime?.processActions,
+				sessionId,
+				roomId: activeSession?.roomId
+			});
+			
+			console.log("activesession character is", activeSession.character);
+			// Process AI response
+			const aiResponse = await Promise.race([
+				activeSession.runtime.processActions(
+					{
+						id: userMemoryData.id,
+						text: message,
+						createdAt: userMemoryData.createdAt,
+						userId: userMemoryData.userId,
+						userName: userMemoryData.userName,
+						roomId: activeSession.roomId,
+						model: activeSession.runtime.settings?.model || 'gpt-4o-mini',
+						modelProvider: activeSession.runtime.settings?.modelProvider || 'openai',
+						content: userMemoryData.content
+					},
+					[{
+						user: activeSession.character.name,
+						model: activeSession.runtime.settings?.model || 'gpt-4o-mini',
+						modelProvider: activeSession.runtime.settings?.modelProvider || 'openai',
+						content: {
+							text: message,
+							action: 'RESPOND',
+							model: activeSession.runtime.settings?.model || 'gpt-4o-mini'
+						}
+					}],
+					activeSession.runtime.settings || {
+						model: 'gpt-4o-mini',
+						modelProvider: 'openai'
+					}
+				),
+				new Promise((_, reject) => setTimeout(() => reject(new Error('Response timeout')), 30000))
+			]);
+			
+			
 
 			const responseText = aiResponse?.[0]?.content?.text || 'No response generated';
 
@@ -2462,6 +2628,325 @@ export class CharacterRegistryDO {
 		}
 	}
 
+	async handleInternalTwitterPost(request) {
+		try {
+			const { userId, characterName, tweet, sessionId, roomId, nonce, character } = await request.json();
+			console.log("handle post", userId, characterName, sessionId, roomId, nonce, character, tweet);
+			// Get character and verify it exists
+			// const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
+			const updatedCharacter = character;
+			// Get the existing session
+			const session = await this.initializeSession(sessionId, updatedCharacter);
+			if (!session?.runtime) {
+				throw new Error('Session not initialized');
+			}
+
+			// Get secrets and set credentials
+			const secrets = await this.getCharacterSecrets(character.id);
+			session.runtime.settings = {
+				...session.runtime.settings,
+				TWITTER_USERNAME: secrets.modelKeys.twitter_username,
+				TWITTER_PASSWORD: secrets.modelKeys.twitter_password,
+				TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+				TWITTER_COOKIES: secrets.modelKeys.twitter_cookies,
+				TWITTER_DRY_RUN: 'false'
+			};
+
+			console.log("session twitter post", JSON.stringify(session.runtime.settings));
+
+			// Initialize Twitter client 
+			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+			const twitterClient = await TwitterClientInterface.start(session.runtime);
+			console.log("twitter client", twitterClient);
+			console.log("tweet is", tweet);
+			// Send tweet
+			const result = await twitterClient.sendTweet(tweet);
+
+			// Generate new nonce for next request
+			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
+
+			return new Response(JSON.stringify({
+				success: true,
+				tweet: result,
+				nonce: newNonce.nonce
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		} catch (error) {
+			console.error('Internal Twitter post error:', error);
+			return new Response(JSON.stringify({
+				error: error.message
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: { 
+					...CORS_HEADERS,
+					'Content-Type': 'application/json' }
+			});
+		}
+	}
+
+
+
+	async handleTwitterNotifications(request) {
+		try {
+			const { userId, characterName, sessionId, roomId, nonce, updatedCharacter } = await request.json();
+
+			// Get character and verify it exists
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
+
+			// Get the existing session
+			const session = await this.initializeSession(sessionId, updatedCharacter);
+			if (!session?.runtime) {
+				throw new Error('Session not initialized');
+			}
+
+			// Get secrets and set credentials
+			const secrets = await this.getCharacterSecrets(character.id);
+			session.runtime.settings = {
+				...session.runtime.settings,
+				TWITTER_USERNAME: secrets.modelKeys.twitter_username,
+				TWITTER_PASSWORD: secrets.modelKeys.twitter_password,
+				TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+				TWITTER_COOKIES: secrets.modelKeys.twitter_cookies,
+				TWITTER_DRY_RUN: 'true'
+			};
+
+			// Initialize Twitter client 
+			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+			const twitterClient = await TwitterClientInterface.start(session.runtime);
+
+			// Fetch notifications directly using new client
+			const notifications = await twitterClient.getNotifications(20);
+
+			// Generate new nonce
+			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
+
+			return new Response(JSON.stringify({
+				notifications,
+				nonce: newNonce.nonce
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		} catch (error) {
+			console.error('Twitter notifications error:', error);
+			return new Response(JSON.stringify({
+				error: error.message
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	}
+
+
+
+
+	async handleTwitterRetweet(request) {
+		try {
+			const { userId, characterName, tweetId, quoteText } = await request.json();
+
+			// Get character
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
+
+			// Get secrets and initialize client
+			const secrets = await this.getCharacterSecrets(character.id);
+			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+			const twitterClient = await TwitterClientInterface.start({
+				settings: {
+					TWITTER_USERNAME: secrets.modelKeys.twitter_username,
+					TWITTER_PASSWORD: secrets.modelKeys.twitter_password,
+					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+					TWITTER_COOKIES: secrets.modelKeys.twitter_cookies,
+					TWITTER_DRY_RUN: 'true'
+				}
+			});
+
+			const result = await twitterClient.retweet(tweetId, quoteText);
+
+			return new Response(JSON.stringify(result), {
+				headers: { ...CORS_HEADERS }
+			});
+		} catch (error) {
+			console.error('Twitter retweet error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to retweet',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	}
+
+
+	async handleTwitterReply(request) {
+		try {
+			const { userId, characterName, tweetId, replyText } = await request.json();
+
+			// Get character
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
+
+			// Get secrets and initialize client
+			const secrets = await this.getCharacterSecrets(character.id);
+			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+			const twitterClient = await TwitterClientInterface.start({
+				settings: {
+					TWITTER_USERNAME: secrets.modelKeys.twitter_username,
+					TWITTER_PASSWORD: secrets.modelKeys.twitter_password,
+					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+					TWITTER_COOKIES: secrets.modelKeys.twitter_cookies,
+					TWITTER_DRY_RUN: 'true'
+				}
+			});
+
+			const result = await twitterClient.reply(tweetId, replyText);
+
+			return new Response(JSON.stringify(result), {
+				headers: { ...CORS_HEADERS }
+			});
+		} catch (error) {
+			console.error('Twitter reply error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to send reply',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	}
+
+
+	async handleTwitterLike(request) {
+		try {
+			const { userId, characterName, tweetId } = await request.json();
+
+			// Get character
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
+
+			// Get secrets and initialize client
+			const secrets = await this.getCharacterSecrets(character.id);
+			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+			const twitterClient = await TwitterClientInterface.start({
+				settings: {
+					TWITTER_USERNAME: secrets.modelKeys.twitter_username,
+					TWITTER_PASSWORD: secrets.modelKeys.twitter_password,
+					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+					TWITTER_COOKIES: secrets.modelKeys.twitter_cookies,
+					TWITTER_DRY_RUN: 'true'
+				}
+			});
+
+			const result = await twitterClient.likeTweet(tweetId);
+
+			return new Response(JSON.stringify(result), {
+				headers: { ...CORS_HEADERS }
+			});
+		} catch (error) {
+			console.error('Twitter like error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to like tweet',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	}
+
+
+	// Helper method to get runtime from token
+	async getRuntimeFromToken(token) {
+		try {
+			// Find session with matching Twitter token
+			const sessions = await this.sql.exec(`
+			SELECT s.*, c.* 
+			FROM character_sessions s
+			JOIN characters c ON s.character_id = c.id
+			JOIN character_secrets cs ON c.id = cs.character_id
+			WHERE cs.model_keys LIKE ?
+		  `, `%${token}%`).toArray();
+
+			if (!sessions.length) {
+				return null;
+			}
+
+			const session = sessions[0];
+			const secrets = await this.getCharacterSecrets(session.character_id);
+
+			// Initialize and return runtime
+			return await this.initializeRuntime({
+				...session,
+				settings: {
+					...session.settings,
+					secrets
+				}
+			});
+		} catch (error) {
+			console.error('Error getting runtime from token:', error);
+			return null;
+		}
+	}
+	async getSessionFromToken(request) {
+		try {
+			const token = request.headers.get('Authorization');
+			if (!token) return null;
+
+			// Find session with matching Twitter token
+			const sessions = await this.sql.exec(`
+			SELECT s.*, c.* 
+			FROM character_sessions s
+			JOIN characters c ON s.character_id = c.id
+			JOIN character_secrets cs ON c.id = cs.character_id
+			WHERE cs.model_keys LIKE ?
+		  `, `%${token}%`).toArray();
+
+			if (!sessions.length) {
+				return null;
+			}
+
+			const session = sessions[0];
+
+			// Get secrets
+			const secrets = await this.getCharacterSecrets(session.character_id);
+			if (!secrets?.modelKeys?.twitter_token === token) {
+				return null;
+			}
+
+			return {
+				...session,
+				settings: {
+					...session.settings,
+					secrets
+				}
+			};
+		} catch (error) {
+			console.error('Error getting session from token:', error);
+			return null;
+		}
+	}
+
 
 	async fetch(request) {
 		if (request.method === "GET") {
@@ -2474,6 +2959,45 @@ export class CharacterRegistryDO {
 			switch (url.pathname) {
 				case '/migrate-schema': {
 					return await this.handleMigrateSchema();
+				}
+				case '/send-chat-message': {
+					const { sessionId, message, nonce, apiKey } = await request.json();
+					console.log("Received message: in fetch:", message);
+					if (!sessionId || !message) {
+						return new Response(JSON.stringify({
+							error: 'Missing required fields'
+						}), {
+							status: 400,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+
+					try {
+
+						if(!apiKey) {
+							const response = await this.handleMessage(sessionId, message, nonce);
+							return new Response(JSON.stringify(response), {
+								headers: { 'Content-Type': 'application/json' }
+							});	
+
+						} else{
+							const [authType, authToken] = apiKey.split(' ');
+
+							console.log("trying to handle message with auth:", { hasAuth: authToken });
+							const response = await this.handleMessage(sessionId, message, nonce, authToken);
+							return new Response(JSON.stringify(response), {
+								headers: { 'Content-Type': 'application/json' }
+							});	
+						}
+					} catch (error) {
+						return new Response(JSON.stringify({
+							error: 'Message handling failed',
+							details: error.message
+						}), {
+							status: error.message.includes('Invalid or expired nonce') ? 401 : 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
 				}
 				case '/send-message': {
 					const { sessionId, message, nonce, apiKey } = await request.json();
@@ -2489,13 +3013,21 @@ export class CharacterRegistryDO {
 
 					try {
 
-						const [authType, authToken] = apiKey.split(' ');
+						if(!apiKey) {
+							const response = await this.handleMessage(sessionId, message, nonce);
+							return new Response(JSON.stringify(response), {
+								headers: { 'Content-Type': 'application/json' }
+							});	
 
-						console.log("trying to handle message with auth:", { hasAuth: authToken });
-						const response = await this.handleMessage(sessionId, message, nonce, authToken);
-						return new Response(JSON.stringify(response), {
-							headers: { 'Content-Type': 'application/json' }
-						});
+						} else{
+							const [authType, authToken] = apiKey.split(' ');
+
+							console.log("trying to handle message with auth:", { hasAuth: authToken });
+							const response = await this.handleMessage(sessionId, message, nonce, authToken);
+							return new Response(JSON.stringify(response), {
+								headers: { 'Content-Type': 'application/json' }
+							});	
+						}
 					} catch (error) {
 						return new Response(JSON.stringify({
 							error: 'Message handling failed',
@@ -2506,7 +3038,6 @@ export class CharacterRegistryDO {
 						});
 					}
 				}
-
 				case '/create-character': {
 					try {
 						const { author, character } = await request.json();
@@ -2612,7 +3143,7 @@ export class CharacterRegistryDO {
 				}
 				case '/get-discord-credentials': {
 					try {
-						const { characterId } = await request.json();
+						const { characterId, env } = await request.json();
 
 						if (!characterId) {
 							return new Response(JSON.stringify({
@@ -2626,6 +3157,8 @@ export class CharacterRegistryDO {
 						// Use existing secrets infrastructure 
 						const secrets = await this.getCharacterSecrets(characterId);
 						console.log("secrets are", secrets);
+						const salts = [(env.USER_KEY_SALT + "a"), CHARACTER_SALT];
+						console.log("salts are", salts);
 						// Extract just Discord-specific credentials
 						const discordCreds = {
 							appId: secrets.modelKeys.discord_app_id,
@@ -2648,6 +3181,120 @@ export class CharacterRegistryDO {
 						});
 					}
 				}
+				case '/get-twitter-credentials': {
+					try {
+						const { characterId } = await request.json();
+
+						if (!characterId) {
+							return new Response(JSON.stringify({
+								error: 'Missing characterId'
+							}), {
+								status: 400,
+								headers: { 'Content-Type': 'application/json' }
+							});
+						}
+
+						// Use existing secrets infrastructure 
+						const secrets = await this.getCharacterSecrets(characterId);
+						console.log("secrets are", secrets);
+						// Extract just Discord-specific credentials
+						const discordCreds = {
+							TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
+							TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+							TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
+							twitter_cookies: secrets.modelKeys.twitter_cookies
+						};
+
+						return new Response(JSON.stringify(discordCreds), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+
+					} catch (error) {
+						console.error('Error getting twitter credentials:', error);
+						return new Response(JSON.stringify({
+							error: 'Internal server error',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+				case '/twitter-post': {
+					try {
+					return await this.handleInternalTwitterPost(request);
+				} catch (error) {
+					console.error('Twitter notifications handler error:', error);
+					return new Response(JSON.stringify({
+						error: `Failed to post: ${error.message}`,
+						details: error.message
+					}), {
+						status: 500,
+						headers: { 'Content-Type': 'application/json' }
+					});
+				}
+			}
+
+				case '/twitter-notifications': {
+					try {
+						return await this.handleTwitterNotifications(request);
+					} catch (error) {
+						console.error('Twitter notifications handler error:', error);
+						return new Response(JSON.stringify({
+							error: 'Failed to fetch notifications',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+
+				case '/twitter-retweet': {
+					try {
+						return await this.handleTwitterRetweet(request);
+					} catch (error) {
+						console.error('Twitter retweet handler error:', error);
+						return new Response(JSON.stringify({
+							error: 'Failed to retweet',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+
+				case '/twitter-reply': {
+					try {
+						return await this.handleTwitterReply(request);
+					} catch (error) {
+						console.error('Twitter reply handler error:', error);
+						return new Response(JSON.stringify({
+							error: 'Failed to send reply',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+
+				case '/twitter-like': {
+					try {
+						return await this.handleTwitterLike(request);
+					} catch (error) {
+						console.error('Twitter like handler error:', error);
+						return new Response(JSON.stringify({
+							error: 'Failed to like tweet',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+
 				case '/create-memory': {
 					return await this.handleCreateMemory(request);
 				}
@@ -2753,7 +3400,7 @@ export class CharacterRegistryDO {
 							headers: { 'Content-Type': 'application/json' }
 						});
 					} catch (error) {
-						console.error('Session initialization error:', error);
+						console.error('Init Char Room Failure Session initialization error:', error);
 						return new Response(JSON.stringify({
 							error: 'Failed to initialize session',
 							details: error.message

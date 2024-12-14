@@ -51,7 +51,7 @@ update_env_file() {
     
     echo "Creating environment file at: $env_file"
     
-    # Create or update the environment file
+    # Create or update the environment file with new configurations
     cat > "$env_file" << EOL
 # World Publisher Configuration
 # Generated on $(date)
@@ -66,6 +66,20 @@ WORLD_API_URL=$worker_url
 # Please set this URL after making your R2 bucket public
 # Format should be: https://pub-{hash}.r2.dev
 BUCKET_URL=
+
+# AI Configuration
+OPENAI_API_KEY=
+ANTHROPIC_API_KEY=
+
+# Cloudflare Configuration
+CF_ACCOUNT_ID=
+CF_GATEWAY_ID=
+
+# Sentry Configuration
+SENTRY_DSN=
+SENTRY_ORG=
+SENTRY_PROJECT=
+SENTRY_AUTH_TOKEN=
 
 # Note: Make your R2 bucket public through the Cloudflare dashboard
 # and update the BUCKET_URL accordingly
@@ -129,7 +143,6 @@ while IFS= read -r line; do
         id="${BASH_REMATCH[2]}"
         # Skip the header line and empty lines
         if [[ $name != "Account Name" ]] && [[ -n "${name// }" ]]; then
-            # Remove leading/trailing whitespace without xargs
             name=$(echo "$name" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
             id=$(echo "$id" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
             account_names+=("$name")
@@ -138,7 +151,7 @@ while IFS= read -r line; do
     fi
 done < <(echo "$account_info")
 
-# Check if we have multiple accounts
+# Account selection logic (unchanged)
 if [ ${#account_ids[@]} -eq 0 ]; then
     echo "No accounts found. Please make sure you're logged in to Wrangler."
     exit 1
@@ -182,7 +195,6 @@ if [[ $VISIT_COUNTS_output == *"Error"* ]]; then
     exit 1
 fi
 
-# Updated pattern to match the new output format
 VISIT_COUNTS_id=$(echo "$VISIT_COUNTS_output" | grep 'id = "' | sed 's/.*id = "\([^"]*\)".*/\1/')
 
 if [ -z "$VISIT_COUNTS_id" ]; then
@@ -193,20 +205,34 @@ fi
 
 echo "Successfully created VISIT_COUNTS namespace with ID: $VISIT_COUNTS_id"
 
-# Create wrangler.toml with correct format
-echo "Creating/Updating wrangler.toml..."
-# Create wrangler.toml with correct format
+# Collect additional configuration
+read -p "Enter your OpenAI API Key (press Enter to skip): " openai_api_key
+read -p "Enter your Anthropic API Key (press Enter to skip): " anthropic_api_key
+read -p "Enter your Cloudflare Gateway ID (press Enter to skip): " cf_gateway_id
+read -p "Enter your Sentry DSN (press Enter to skip): " sentry_dsn
+read -p "Enter your Sentry Organization (press Enter to skip): " sentry_org
+read -p "Enter your Sentry Project (press Enter to skip): " sentry_project
+read -p "Enter your Sentry Auth Token (press Enter to skip): " sentry_auth_token
+
+# Create wrangler.toml with updated format
 echo "Creating/Updating wrangler.toml..."
 cat > wrangler.toml << EOL
 name = "$project_name"
-main = "src/worker.js"
+main = "dist/worker.js"
 compatibility_date = "$current_date"
 compatibility_flags = ["nodejs_compat"]
 account_id = "$account_id"
 
+[[rules]]
+type = "ESModule"
+globs = ["**/*.js"]
+
 kv_namespaces = [
     { binding = "VISIT_COUNTS", id = "$VISIT_COUNTS_id" }
 ]
+
+[ai]
+binding = "AI"
 
 [observability]
 enabled = true
@@ -223,6 +249,10 @@ class_name = "WorldRegistryDO"
 name = "USER_AUTH"
 class_name = "UserAuthDO"
 
+[[durable_objects.bindings]]
+name = "CHARACTER_REGISTRY"
+class_name = "CharacterRegistryDO"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["WorldRegistryDO"]
@@ -231,9 +261,21 @@ new_sqlite_classes = ["WorldRegistryDO"]
 tag = "v2"
 new_sqlite_classes = ["UserAuthDO"]
 
+[[migrations]]
+tag = "v3"
+new_sqlite_classes = ["CharacterRegistryDO"]
+
 [vars]
 ENVIRONMENT = "production"
 WORLD_BUCKET_URL = ""
+OPENAI_API_KEY = "${openai_api_key}"
+ANTHROPIC_API_KEY = "${anthropic_api_key}"
+CF_ACCOUNT_ID = "${account_id}"
+CF_GATEWAY_ID = "${cf_gateway_id}"
+SENTRY_DSN = "${sentry_dsn}"
+SENTRY_ORG = "${sentry_org}"
+SENTRY_PROJECT = "${sentry_project}"
+SENTRY_AUTH_TOKEN = "${sentry_auth_token}"
 
 [[r2_buckets]]
 binding = "WORLD_BUCKET"
@@ -244,8 +286,9 @@ preview_bucket_name = "${project_name}-bucket-preview"
 vars = { ENVIRONMENT = "production" }
 EOL
 
-echo "Created final wrangler.toml with KV namespace ID: $VISIT_COUNTS_id"
+echo "Created final wrangler.toml with all configurations"
 
+# Create R2 bucket and set CORS rules (unchanged)
 echo "Creating R2 bucket..."
 output=$(npx wrangler r2 bucket create "${project_name}-bucket" 2>&1)
 if [[ $output != *"Created bucket"* ]]; then
@@ -276,20 +319,11 @@ if [[ $output == *"Error"* ]]; then
 fi
 echo "CORS rules set successfully."
 
-# Create domain for R2 bucket
-custom_domain="${project_name}.${account_id}.r2.cloudflarestorage.com"
-echo "Your R2 bucket domain is: $custom_domain"
-
-# Update wrangler.toml with domain
-sed -i.bak "s|WORLD_BUCKET_URL = \"\"|WORLD_BUCKET_URL = \"https://$custom_domain\"|" wrangler.toml
-rm wrangler.toml.bak
-
-# Generate API secret
+# Rest of the setup (API secrets, deployment, etc.)
 api_secret=$(generate_random_string 32)
 echo "Generated API secret: $api_secret"
 echo "Make sure to save this secret securely."
 
-# Deploy worker
 echo "Deploying worker..."
 output=$(npx wrangler deploy 2>&1)
 if [[ $output == *"Error"* ]]; then
@@ -307,7 +341,7 @@ echo "$user_key_salt" | npx wrangler secret put USER_KEY_SALT > /dev/null 2>&1
 read -p "Enter a default invite code: " invite_code
 echo "$invite_code" | npx wrangler secret put INVITE_CODE > /dev/null 2>&1
 
-# Deploy worker again
+# Final deployment
 echo "Redeploying worker to ensure latest changes..."
 output=$(npx wrangler deploy 2>&1)
 if [[ $output == *"Error"* ]]; then
@@ -320,14 +354,15 @@ worker_url=$(get_worker_url "$project_name")
 update_env_file "$api_secret" "$worker_url"
 
 echo "Setup complete! Your world publishing system is now deployed."
-echo "R2 Bucket URL: https://$custom_domain"
+echo "Worker URL: $worker_url"
 echo "API Secret: $api_secret"
 echo ""
 echo "Next steps:"
-echo "1. Your worker code in src/worker.js has been deployed."
+echo "1. Your worker code in dist/worker.js has been deployed."
 echo "2. Environment configuration has been created at ~/.world-publisher"
 echo "3. IMPORTANT: Make your R2 bucket public through the Cloudflare dashboard"
 echo "4. Update the BUCKET_URL in ~/.world-publisher with your public R2 URL"
-echo "5. If you need to make changes, edit src/worker.js and run 'npx wrangler deploy' to update."
-echo "6. To roll the API key and redeploy, run this script with the --roll-api-key argument."
-echo "7. Start publishing your virtual worlds!"
+echo "5. If you need to make changes, edit your worker code and run 'npx wrangler deploy' to update"
+echo "6. To roll the API key and redeploy, run this script with the --roll-api-key argument"
+echo "7. Make sure all your API keys and configurations are properly set in the environment file"
+echo "8. Start publishing your virtual worlds!"

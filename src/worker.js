@@ -7,7 +7,7 @@ import generateHomeHTML from './homeTemplate';
 import generateRegisterHTML from './registrationTemplate';
 import generateRequestKeyRollHTML from './rollKeyTemplate';
 import generateCharacterHTML from './characterTemplate';
-import generateCharacterDirectoryHTML from './characterDirectoryTemplate';
+// import generateCharacterDirectoryHTML from './characterDirectoryTemplate';
 
 import { UserAuthDO } from './userAuthDO';
 import { WorldRegistryDO } from './WorldRegistryDO';
@@ -20,10 +20,11 @@ export { UserAuthDO, WorldRegistryDO, CharacterRegistryDO };
 // Define CORS
 const CORS_HEADERS = {
 	'Access-Control-Allow-Origin': '*',
-	'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+	'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
 	'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
-	'Access-Control-Max-Age': '86400'
+	'Access-Control-Max-Age': '86400',
 };
+
 
 // Main worker class
 export default {
@@ -80,7 +81,7 @@ export default {
 		return new Response(null, {
 			status: 204,
 			headers: {
-				...CORS_HEADERS,
+				// ...CORS_HEADERS,
 				'Access-Control-Allow-Headers': 'Content-Type, Authorization',
 				'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 			},
@@ -2372,6 +2373,7 @@ export default {
 	async fetch(request, env) {
 		const url = new URL(request.url);
 		const path = url.pathname;
+
 		// Handle OPTIONS request first
 		if (request.method === 'OPTIONS') {
 			return new Response(null, {
@@ -2379,7 +2381,7 @@ export default {
 				headers: {
 					...CORS_HEADERS,
 					'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-					'Access-Control-Allow-Methods': 'POST, OPTIONS',
+					'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
 				},
 			});
 		}
@@ -2413,16 +2415,18 @@ export default {
 			return await auth.fetch(internalRequest);
 		}
 
-		// Handle preflight requests
+		// // Handle preflight requests
 		if (request.method === 'OPTIONS') {
 			return this.handleOptions(request);
 		}
+		console.log("Before auth check:", path, request.method);
 
 		// Authenticate non-GET requests (except certain public endpoints)
 		if (request.method !== 'GET' && ![
 			'/search',
 			'/initiate-key-roll',
 			'/verify-key-roll',
+			'/api/character/chat-message',
 			'/api/character/message',
 			'/api/character/session',
 			'/featured-characters',
@@ -2434,6 +2438,9 @@ export default {
 				});
 			}
 		}
+		console.log("Auth passed for:", path);
+
+		console.log("the current attempted path", path, request.method);
 
 		// Main request routing
 		switch (request.method) {
@@ -2546,6 +2553,7 @@ export default {
 			}
 
 			case 'POST': {
+				console.log('POST request:', path);
 				switch (path) {
 					case '/migrate-data': {
 						try {
@@ -2680,6 +2688,303 @@ export default {
 							headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
 						});
 					}
+
+					case '/api/twitter/post': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, tweet, sessionId, roomId, nonce } = await request.json();
+							console.log('Twitter post:', userId, characterName, tweet, sessionId, roomId, nonce);
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author: userId, name: characterName })
+							}));
+
+							if (!charResponse.ok) {
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const character = await charResponse.json();
+
+							console.log("Character found:", character);
+
+							return await registry.fetch(new Request('http://internal/twitter-post', {
+								method: 'POST',
+								body: JSON.stringify({ userId, characterName, tweet, sessionId, roomId, nonce, character })
+							}));
+						} catch (error) {
+							console.error('Twitter post error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+
+					case '/api/twitter/notifications': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, sessionId, roomId, nonce, updatedCharacter } = await request.json();
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author: userId, name: characterName })
+							}));
+
+							if (!charResponse.ok) {
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const character = await charResponse.json();
+
+							return await registry.fetch(new Request('http://internal/twitter-notifications', {
+								method: 'POST',
+								body: JSON.stringify({ userId, characterName, sessionId, roomId, nonce, updatedCharacter })
+							}));
+						} catch (error) {
+							console.error('Twitter notifications error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+
+					case '/api/twitter/retweet': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, tweetId, quoteText } = await request.json();
+
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author: userId, name: characterName })
+							}));
+
+							if (!charResponse.ok) {
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const character = await charResponse.json();
+
+							return await registry.fetch(new Request('http://internal/twitter-retweet', {
+								method: 'POST',
+								body: JSON.stringify({
+									characterId: character.id,
+									tweetId,
+									quoteText
+								})
+							}));
+						} catch (error) {
+							console.error('Twitter retweet error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+
+					case '/api/twitter/reply': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, tweetId, replyText } = await request.json();
+
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author: userId, name: characterName })
+							}));
+
+							if (!charResponse.ok) {
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const character = await charResponse.json();
+
+							return await registry.fetch(new Request('http/internal/twitter-reply', {
+								method: 'POST',
+								body: JSON.stringify({
+									characterId: character.id,
+									tweetId,
+									replyText
+								})
+							}));
+						} catch (error) {
+							console.error('Twitter reply error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+
+					case '/api/twitter/like': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, tweetId } = await request.json();
+
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author: userId, name: characterName })
+							}));
+
+							if (!charResponse.ok) {
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const character = await charResponse.json();
+
+							return await registry.fetch(new Request('http/internal/twitter-like', {
+								method: 'POST',
+								body: JSON.stringify({
+									characterId: character.id,
+									tweetId
+								})
+							}));
+						} catch (error) {
+							console.error('Twitter like error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
 					case '/discord-credentials': {
 						try {
 							const { userId, characterName } = await request.json();
@@ -2727,11 +3032,11 @@ export default {
 							}
 
 							const character = await charResponse.json();
-
+							console.log(env.CHARACTER_SALT, env.USER_KEY_SALT)
 							// Now get Discord credentials using character ID
 							const credsResponse = await registry.fetch(new Request('http://internal/get-discord-credentials', {
 								method: 'POST',
-								body: JSON.stringify({ characterId: character.id })
+								body: JSON.stringify({ characterId: character.id, env })
 							}));
 
 							return new Response(await credsResponse.text(), {
@@ -2741,6 +3046,75 @@ export default {
 
 						} catch (error) {
 							console.error('Discord credentials error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+					case '/get-my-twitter-credentials': {
+						console.log("we are in twitter credentials");
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							console.log("we are in the try block", `${env.CHARACTER_SALT}=`, `${env.USER_KEY_SALT}=`);
+							const { userId, characterName } = await request.json();
+							console.log("userid and charactername weee", userId, characterName);
+							// Auth check
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+							console.log("the api key is", apiKey, userId, env);
+							// Verify API key and username match
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							// Get character ID first
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+							console.log("the character id we got is", id);
+							// First get the character
+							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author: userId, name: characterName })
+							}));
+
+							if (!charResponse.ok) {
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const character = await charResponse.json();
+							console.log("ayo the character is", character);
+							// Get Twitter credentials using character ID
+							const credsResponse = await registry.fetch(new Request('http://internal/get-twitter-credentials', {
+								method: 'POST',
+								body: JSON.stringify({ characterId: character.id }),
+							}));
+
+							console.log("the creds response is", credsResponse);
+							return new Response(await credsResponse.text(), {
+								status: credsResponse.status,
+								headers: { ...CORS_HEADERS }
+							});
+						} catch (error) {
+							console.error('Twitter credentials error:', error);
 							return new Response(JSON.stringify({
 								error: 'Internal server error',
 								details: error.message
@@ -2854,6 +3228,59 @@ export default {
 						});
 						return await registry.fetch(downloadRequest);
 					}
+					case '/api/character/chat-message': {
+						try {
+							const { roomId, sessionId, message, nonce } = await request.json();
+							console.log("main worker attempting to send message");
+							if (!sessionId || !message) {
+								return new Response(JSON.stringify({
+									error: 'Missing required fields'
+								}), {
+									status: 400,
+									headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+								});
+							}
+
+							// Get API key from header if it exists
+							const apiKey = request.headers.get('Authorization');
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							const response = await registry.fetch(new Request('http://internal/send-chat-message', {
+								method: 'POST',
+								body: JSON.stringify({ roomId, sessionId, message, nonce, apiKey }) // Pass apiKey to DO
+							}));
+
+							if (!response.ok) {
+								const error = await response.text();
+								if (error.includes('Invalid or expired nonce')) {
+									return new Response(JSON.stringify({
+										error: 'Session expired, please start a new session',
+										code: 'SESSION_EXPIRED'
+									}), {
+										status: 401,
+										headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+									});
+								}
+								throw new Error(error);
+							}
+
+							const result = await response.json();
+							return new Response(JSON.stringify(result), {
+								headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+							});
+						} catch (error) {
+							console.error('Message handling error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+							});
+						}
+					}
 					case '/api/character/message': {
 						try {
 							const { roomId, sessionId, message, nonce } = await request.json();
@@ -2873,7 +3300,7 @@ export default {
 							const id = env.CHARACTER_REGISTRY.idFromName("global");
 							const registry = env.CHARACTER_REGISTRY.get(id);
 
-							const response = await registry.fetch(new Request('http://internal/send-message', {
+							const response = await registry.fetch(new Request('http://internal/send-chat-message', {
 								method: 'POST',
 								body: JSON.stringify({ roomId, sessionId, message, nonce, apiKey }) // Pass apiKey to DO
 							}));
@@ -2981,7 +3408,7 @@ export default {
 						});
 
 						return await auth.fetch(internalRequest);
-					}
+					} 
 					default: {
 						return new Response(JSON.stringify({ error: 'Invalid endpoint' }), {
 							status: 404,

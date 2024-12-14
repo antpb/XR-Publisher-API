@@ -159,7 +159,7 @@ export class EnhancedSQLiteMemoryAdapter extends SQLiteMemoryAdapter {
 	async createMemory({ id, type = 'message', content, userId, userName, roomId, agentId, isUnique = false }) {
 		try {
 		  if (!roomId) {
-			console.error('Missing required roomId in EnhancedSQLiteMemoryAdapter');
+			console.log('Missing required roomId in EnhancedSQLiteMemoryAdapter');
 			return false;
 		  }
 	  
@@ -227,8 +227,8 @@ export class EnhancedSQLiteMemoryAdapter extends SQLiteMemoryAdapter {
 	  
 		  return true;
 		} catch (error) {
-		  console.error('Error in enhanced memory creation:', error);
-		  console.error('Failed enhanced memory data:', { id, type, roomId, userId, userName, agentId });
+		  console.log('Error in enhanced memory creation:', error);
+		  console.log('Failed enhanced memory data:', { id, type, roomId, userId, userName, agentId });
 		  return false;
 		}
 	  }

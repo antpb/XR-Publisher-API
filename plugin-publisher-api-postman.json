@@ -1,0 +1,902 @@
+{
+  "info": {
+    "name": "Plugin Publisher API",
+    "description": "",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "bruno",
+      "event": []
+    },
+    {
+      "name": "Authentication",
+      "item": [
+        {
+          "name": "Create User",
+          "event": [],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "disabled": false,
+                "type": "default"
+              }
+            ],
+            "auth": null,
+            "description": "Create a new user account with the plugin publishing system",
+            "url": {
+              "raw": "{{baseUrl}}/create-user",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "create-user"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"testuser\",\n  \"inviteCode\": \"{{inviteCode}}\",\n  \"github_username\": \"githubuser\",\n  \"email\": \"user@example.com\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Initiate Key Roll",
+          "event": [],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "disabled": false,
+                "type": "default"
+              }
+            ],
+            "auth": null,
+            "description": "Start the key recovery process",
+            "url": {
+              "raw": "{{baseUrl}}/initiate-key-roll",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "initiate-key-roll"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"email\": \"{{email}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Rotate API Key",
+          "event": [],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "disabled": false,
+                "type": "default"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "disabled": false,
+                "type": "default"
+              }
+            ],
+            "auth": null,
+            "description": "Generate a new API key and invalidate the current one",
+            "url": {
+              "raw": "{{baseUrl}}/rotate-key",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "rotate-key"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"username\": \"{{username}}\",\n  \"currentApiKey\": \"{{apiKey}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Verify Key Roll",
+          "event": [],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "disabled": false,
+                "type": "default"
+              }
+            ],
+            "auth": null,
+            "description": "Complete the key recovery process with GitHub verification",
+            "url": {
+              "raw": "{{baseUrl}}/verify-key-roll",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "verify-key-roll"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"gistUrl\": \"https://gist.github.com/username/gistid\",\n  \"verificationToken\": \"{{verificationToken}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Author Management",
+      "item": [
+        {
+          "name": "Delete Author",
+          "event": [],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "disabled": false,
+                "type": "default"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "disabled": false,
+                "type": "default"
+              }
+            ],
+            "auth": null,
+            "description": "Delete an author and all associated plugins",
+            "url": {
+              "raw": "{{baseUrl}}/delete-author",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "delete-author"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"authorName\": \"{{username}}\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Update Author Info",
+          "event": [],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "disabled": false,
+                "type": "default"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "disabled": false,
+                "type": "default"
+              }
+            ],
+            "auth": null,
+            "description": "Update author profile information",
+            "url": {
+              "raw": "{{baseUrl}}/update-author-info",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "update-author-info"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{username}}\",\n  \"pluginName\": \"{{pluginName}}\",\n  \"authorData\": {\n    \"username\": \"{{username}}\",\n    \"email\": \"{{email}}\",\n    \"avatar_url\": \"https://example.com/avatar.jpg\",\n    \"bio\": \"Developer bio\",\n    \"website\": \"https://example.com\",\n    \"twitter\": \"twitterhandle\",\n    \"github\": \"githubhandle\"\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Cache Management",
+      "item": [
+        {
+          "name": "Clear Cache -Authenticated-",
+          "event": [],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "disabled": false,
+                "type": "default"
+              }
+            ],
+            "auth": null,
+            "description": "Clear cached responses (requires authentication)",
+            "url": {
+              "raw": "{{baseUrl}}/clear-cache",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "clear-cache"
+              ],
+              "query": [],
+              "variable": []
+            }
+          }
+        },
+        {
+          "name": "Clear Cache -Public-",
+          "event": [],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": null,
+            "description": "Clear cached responses (public endpoint)",
+            "url": {
+              "raw": "{{baseUrl}}/clear-cache",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "clear-cache"
+              ],
+              "query": [],
+              "variable": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Plugin Data",
+      "item": [
+        {
+          "name": "Get Author Data",
+          "event": [],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": null,
+            "description": "Get author profile and plugins",
+            "url": {
+              "raw": "{{baseUrl}}/author-data?author={{username}}",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "author-data?author={{username}}"
+              ],
+              "query": [
+                {
+                  "key": "author",
+                  "value": "{{username}}"
+                }
+              ],
+              "variable": []
+            }
+          }
+        },
+        {
+          "name": "Get Plugin Data",
+          "event": [],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": null,
+            "description": "Get detailed information about a specific plugin",
+            "url": {
+              "raw": "{{baseUrl}}/plugin-data?author={{username}}&slug={{pluginSlug}}",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "plugin-data?author={{username}}&slug={{pluginSlug}}"
+              ],
+              "query": [
+                {
+                  "key": "author",
+                  "value": "{{username}}"
+                },
+                {
+                  "key": "slug",
+                  "value": "{{pluginSlug}}"
+                }
+              ],
+              "variable": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Plugin Management",
+      "item": [
+        {
+          "name": "Backup Plugin",
+          "event": [],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "disabled": false,
+                "type": "default"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "disabled": false,
+                "type": "default"
+              }
+            ],
+            "auth": null,
+            "description": "Create a backup of the current plugin version",
+            "url": {
+              "raw": "{{baseUrl}}/backup-plugin",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "backup-plugin"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"author\": \"{{username}}\",\n  \"slug\": \"{{pluginSlug}}\",\n  \"version\": \"1.0.0\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Finalize Plugin Upload",
+          "event": [],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "disabled": false,
+                "type": "default"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "disabled": false,
+                "type": "default"
+              }
+            ],
+            "auth": null,
+            "description": "Complete the plugin upload process",
+            "url": {
+              "raw": "{{baseUrl}}/plugin-upload-complete",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "plugin-upload-complete"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{username}}\",\n  \"pluginName\": \"{{pluginName}}\",\n  \"metadata\": {\n    \"name\": \"Example Plugin\",\n    \"version\": \"1.0.0\",\n    \"short_description\": \"A sample plugin description\",\n    \"tags\": [\"example\", \"test\"]\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Upload Plugin Assets",
+          "event": [],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "disabled": false,
+                "type": "default"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "disabled": false,
+                "type": "default"
+              }
+            ],
+            "auth": null,
+            "description": "Upload plugin icons or banner images",
+            "url": {
+              "raw": "{{baseUrl}}/plugin-upload-assets",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "plugin-upload-assets"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{username}}\",\n  \"pluginName\": \"{{pluginName}}\",\n  \"fileName\": \"icon-256x256.jpg\",\n  \"fileData\": \"{{base64ImageData}}\",\n  \"assetType\": \"icon\"\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Upload Plugin Chunk",
+          "event": [],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "disabled": false,
+                "type": "default"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "disabled": false,
+                "type": "default"
+              }
+            ],
+            "auth": null,
+            "description": "Upload a chunk of the plugin ZIP file",
+            "url": {
+              "raw": "{{baseUrl}}/plugin-upload-chunk",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "plugin-upload-chunk"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{username}}\",\n  \"pluginName\": \"{{pluginName}}\",\n  \"fileData\": \"{{base64ChunkData}}\",\n  \"chunkNumber\": 1,\n  \"totalChunks\": 3\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Upload Plugin JSON",
+          "event": [],
+          "request": {
+            "method": "POST",
+            "header": [
+              {
+                "key": "Authorization",
+                "value": "Bearer {{apiKey}}",
+                "disabled": false,
+                "type": "default"
+              },
+              {
+                "key": "Content-Type",
+                "value": "application/json",
+                "disabled": false,
+                "type": "default"
+              }
+            ],
+            "auth": null,
+            "description": "Upload plugin metadata in JSON format",
+            "url": {
+              "raw": "{{baseUrl}}/plugin-upload-json",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "plugin-upload-json"
+              ],
+              "query": [],
+              "variable": []
+            },
+            "body": {
+              "mode": "raw",
+              "raw": "{\n  \"userId\": \"{{username}}\",\n  \"pluginName\": \"{{pluginName}}\",\n  \"jsonData\": {\n    \"name\": \"Example Plugin\",\n    \"version\": \"1.0.0\",\n    \"short_description\": \"A sample plugin description\",\n    \"tags\": [\"example\", \"test\"],\n    \"contributors\": {\n      \"{{username}}\": {\n        \"profile\": \"https://example.com\",\n        \"avatar\": \"https://example.com/avatar.jpg\",\n        \"display_name\": \"Test User\"\n      }\n    }\n  }\n}",
+              "options": {
+                "raw": {
+                  "language": "json"
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "Version Check",
+          "event": [],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": null,
+            "description": "Check if a new version can be uploaded",
+            "url": {
+              "raw": "{{baseUrl}}/version-check?author={{username}}&pluginName={{pluginName}}&newVersion=1.1.0",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "version-check?author={{username}}&pluginName={{pluginName}}&newVersion=1.1.0"
+              ],
+              "query": [
+                {
+                  "key": "author",
+                  "value": "{{username}}"
+                },
+                {
+                  "key": "pluginName",
+                  "value": "{{pluginName}}"
+                },
+                {
+                  "key": "newVersion",
+                  "value": "1.1.0"
+                }
+              ],
+              "variable": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Search",
+      "item": [
+        {
+          "name": "Search worlds",
+          "event": [],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": null,
+            "description": "Search for plugins by text and tags",
+            "url": {
+              "raw": "{{baseUrl}}/search?q={{searchQuery}}&tag={{tag}}&limit={{limit}}&offset={{offset}}",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "search?q={{searchQuery}}&tag={{tag}}&limit={{limit}}&offset={{offset}}"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "{{searchQuery}}"
+                },
+                {
+                  "key": "tag",
+                  "value": "{{tag}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ],
+              "variable": []
+            }
+          }
+        },
+        {
+          "name": "Search Results Page",
+          "event": [],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": null,
+            "description": "Get HTML page with search results",
+            "url": {
+              "raw": "{{baseUrl}}/directory/search?q={{searchQuery}}&tag={{tag}}&limit={{limit}}&offset={{offset}}",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "directory",
+                "search?q={{searchQuery}}&tag={{tag}}&limit={{limit}}&offset={{offset}}"
+              ],
+              "query": [
+                {
+                  "key": "q",
+                  "value": "{{searchQuery}}"
+                },
+                {
+                  "key": "tag",
+                  "value": "{{tag}}"
+                },
+                {
+                  "key": "limit",
+                  "value": "20"
+                },
+                {
+                  "key": "offset",
+                  "value": "0"
+                }
+              ],
+              "variable": []
+            }
+          }
+        }
+      ]
+    },
+    {
+      "name": "Statistics",
+      "item": [
+        {
+          "name": "Download Plugin",
+          "event": [],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": null,
+            "description": "Download a plugin and record the download count",
+            "url": {
+              "raw": "{{baseUrl}}/download?author={{username}}&slug={{pluginSlug}}",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "download?author={{username}}&slug={{pluginSlug}}"
+              ],
+              "query": [
+                {
+                  "key": "author",
+                  "value": "{{username}}"
+                },
+                {
+                  "key": "slug",
+                  "value": "{{pluginSlug}}"
+                }
+              ],
+              "variable": []
+            }
+          }
+        },
+        {
+          "name": "Get Download Count",
+          "event": [],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": null,
+            "description": "Get the number of downloads for a plugin",
+            "url": {
+              "raw": "{{baseUrl}}/download-count?author={{username}}&slug={{pluginSlug}}",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "download-count?author={{username}}&slug={{pluginSlug}}"
+              ],
+              "query": [
+                {
+                  "key": "author",
+                  "value": "{{username}}"
+                },
+                {
+                  "key": "slug",
+                  "value": "{{pluginSlug}}"
+                }
+              ],
+              "variable": []
+            }
+          }
+        },
+        {
+          "name": "Record Activation",
+          "event": [],
+          "request": {
+            "method": "GET",
+            "header": [],
+            "auth": null,
+            "description": "Record a plugin activation",
+            "url": {
+              "raw": "{{baseUrl}}/activate?author={{username}}&slug={{pluginSlug}}",
+              "protocol": "",
+              "host": [
+                "{{baseUrl}}"
+              ],
+              "path": [
+                "activate?author={{username}}&slug={{pluginSlug}}"
+              ],
+              "query": [
+                {
+                  "key": "author",
+                  "value": "{{username}}"
+                },
+                {
+                  "key": "slug",
+                  "value": "{{pluginSlug}}"
+                }
+              ],
+              "variable": []
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "inviteCode",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "username",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "email",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "apiKey",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "verificationToken",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "pluginName",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "pluginSlug",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "base64ImageData",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "base64ChunkData",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "searchQuery",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "tag",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "limit",
+      "value": "",
+      "type": "default"
+    },
+    {
+      "key": "offset",
+      "value": "",
+      "type": "default"
+    }
+  ]
+}

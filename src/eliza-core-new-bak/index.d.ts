@@ -156,7 +156,6 @@ type Models = {
     [ModelProviderName.GROK]: Model;
     [ModelProviderName.GROQ]: Model;
     [ModelProviderName.LLAMACLOUD]: Model;
-    [ModelProviderName.TOGETHER]: Model;
     [ModelProviderName.LLAMALOCAL]: Model;
     [ModelProviderName.GOOGLE]: Model;
     [ModelProviderName.CLAUDE_VERTEX]: Model;
@@ -166,9 +165,6 @@ type Models = {
     [ModelProviderName.HEURIST]: Model;
     [ModelProviderName.GALADRIEL]: Model;
     [ModelProviderName.FAL]: Model;
-    [ModelProviderName.GAIANET]: Model;
-    [ModelProviderName.ALI_BAILIAN]: Model;
-    [ModelProviderName.VOLENGINE]: Model;
 };
 /**
  * Available model providers
@@ -180,7 +176,6 @@ declare enum ModelProviderName {
     GROK = "grok",
     GROQ = "groq",
     LLAMACLOUD = "llama_cloud",
-    TOGETHER = "together",
     LLAMALOCAL = "llama_local",
     GOOGLE = "google",
     CLAUDE_VERTEX = "claude_vertex",
@@ -189,10 +184,7 @@ declare enum ModelProviderName {
     OLLAMA = "ollama",
     HEURIST = "heurist",
     GALADRIEL = "galadriel",
-    FAL = "falai",
-    GAIANET = "gaianet",
-    ALI_BAILIAN = "ali_bailian",
-    VOLENGINE = "volengine"
+    FAL = "falai"
 }
 /**
  * Represents the current state/context of a conversation
@@ -529,14 +521,6 @@ type Character = {
         voice?: {
             model?: string;
             url?: string;
-            elevenlabs?: {
-                voiceId: string;
-                model?: string;
-                stability?: string;
-                similarityBoost?: string;
-                style?: string;
-                useSpeakerBoost?: string;
-            };
         };
         model?: string;
         embeddingModel?: string;
@@ -925,26 +909,6 @@ declare const composeContext: ({ state, template, }: {
  */
 declare const addHeader: (header: string, body: string) => string;
 
-declare class CircuitBreaker {
-    private readonly config;
-    private state;
-    private failureCount;
-    private lastFailureTime?;
-    private halfOpenSuccesses;
-    private readonly failureThreshold;
-    private readonly resetTimeout;
-    private readonly halfOpenMaxAttempts;
-    constructor(config?: {
-        failureThreshold?: number;
-        resetTimeout?: number;
-        halfOpenMaxAttempts?: number;
-    });
-    execute<T>(operation: () => Promise<T>): Promise<T>;
-    private handleFailure;
-    private reset;
-    getState(): "CLOSED" | "OPEN" | "HALF_OPEN";
-}
-
 /**
  * An abstract class representing a database adapter for managing various entities
  * like accounts, memories, actors, goals, and rooms.
@@ -954,31 +918,6 @@ declare abstract class DatabaseAdapter<DB = any> implements IDatabaseAdapter {
      * The database instance.
      */
     db: DB;
-    /**
-     * Circuit breaker instance used to handle fault tolerance and prevent cascading failures.
-     * Implements the Circuit Breaker pattern to temporarily disable operations when a failure threshold is reached.
-     *
-     * The circuit breaker has three states:
-     * - CLOSED: Normal operation, requests pass through
-     * - OPEN: Failure threshold exceeded, requests are blocked
-     * - HALF_OPEN: Testing if service has recovered
-     *
-     * @protected
-     */
-    protected circuitBreaker: CircuitBreaker;
-    /**
-     * Creates a new DatabaseAdapter instance with optional circuit breaker configuration.
-     *
-     * @param circuitBreakerConfig - Configuration options for the circuit breaker
-     * @param circuitBreakerConfig.failureThreshold - Number of failures before circuit opens (defaults to 5)
-     * @param circuitBreakerConfig.resetTimeout - Time in ms before attempting to close circuit (defaults to 60000)
-     * @param circuitBreakerConfig.halfOpenMaxAttempts - Number of successful attempts needed to close circuit (defaults to 3)
-     */
-    constructor(circuitBreakerConfig?: {
-        failureThreshold?: number;
-        resetTimeout?: number;
-        halfOpenMaxAttempts?: number;
-    });
     /**
      * Optional initialization method for the database adapter.
      * @returns A Promise that resolves when initialization is complete.
@@ -1249,15 +1188,6 @@ declare abstract class DatabaseAdapter<DB = any> implements IDatabaseAdapter {
     abstract getRelationships(params: {
         userId: UUID;
     }): Promise<Relationship[]>;
-    /**
-     * Executes an operation with circuit breaker protection.
-     * @param operation A function that returns a Promise to be executed with circuit breaker protection
-     * @param context A string describing the context/operation being performed for logging purposes
-     * @returns A Promise that resolves to the result of the operation
-     * @throws Will throw an error if the circuit breaker is open or if the operation fails
-     * @protected
-     */
-    protected withCircuitBreaker<T>(operation: () => Promise<T>, context: string): Promise<T>;
 }
 
 declare const defaultCharacter: Character;
@@ -1959,7 +1889,7 @@ declare class ElizaLogger {
 }
 declare const elizaLogger: ElizaLogger;
 
-declare const messageCompletionFooter = "\nResponse format should be formatted in a JSON block like this:\n```json\n{ \"user\": \"{{agentName}}\", \"text\": \"string\", \"action\": \"string\" }\n```";
+declare const messageCompletionFooter = "\nResponse format should be formatted in a JSON block like this:\n```json\n{ \"user\": \"{{agentName}}\", \"text\": string, \"action\": \"string\" }\n```";
 declare const shouldRespondFooter = "The available options are [RESPOND], [IGNORE], or [STOP]. Choose the most appropriate option.\nIf {{agentName}} is talking too much, you can choose [IGNORE]\n\nYour response must include one of the options.";
 declare const parseShouldRespondFromText: (text: string) => "RESPOND" | "IGNORE" | "STOP" | null;
 declare const booleanFooter = "Respond with a YES or a NO.";
@@ -1987,7 +1917,7 @@ declare function parseJsonArrayFromText(text: string): any[];
  */
 declare function parseJSONObjectFromText(text: string): Record<string, any> | null;
 
-declare function stringToUuid(target: string | number): UUID;
+declare function stringToUuid(target: string): UUID;
 
 declare const envSchema: z.ZodObject<{
     OPENAI_API_KEY: z.ZodString;
@@ -2075,7 +2005,7 @@ declare const CharacterSchema: z.ZodObject<{
     adjectives: z.ZodArray<z.ZodString, "many">;
     knowledge: z.ZodOptional<z.ZodArray<z.ZodString, "many">>;
     clients: z.ZodArray<z.ZodNativeEnum<typeof Clients>, "many">;
-    plugins: z.ZodUnion<[z.ZodArray<z.ZodString, "many">, z.ZodArray<z.ZodObject<{
+    plugins: z.ZodArray<z.ZodObject<{
         name: z.ZodString;
         description: z.ZodString;
         actions: z.ZodOptional<z.ZodArray<z.ZodAny, "many">>;
@@ -2099,7 +2029,7 @@ declare const CharacterSchema: z.ZodObject<{
         evaluators?: any[];
         services?: any[];
         clients?: any[];
-    }>, "many">]>;
+    }>, "many">;
     settings: z.ZodOptional<z.ZodObject<{
         secrets: z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
         voice: z.ZodOptional<z.ZodObject<{
@@ -2225,7 +2155,7 @@ declare const CharacterSchema: z.ZodObject<{
     }[][];
     postExamples?: string[];
     adjectives?: string[];
-    plugins?: string[] | {
+    plugins?: {
         actions?: any[];
         providers?: any[];
         description?: string;
@@ -2289,7 +2219,7 @@ declare const CharacterSchema: z.ZodObject<{
     }[][];
     postExamples?: string[];
     adjectives?: string[];
-    plugins?: string[] | {
+    plugins?: {
         actions?: any[];
         providers?: any[];
         description?: string;

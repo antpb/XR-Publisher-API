@@ -1,12 +1,16 @@
 {
+	"type": "module",
 	"dependencies": {
 		"@ai-sdk/anthropic": "^1.0.2",
 		"@ai-sdk/google": "^1.0.3",
 		"@ai-sdk/groq": "^1.0.3",
 		"@ai-sdk/openai": "^1.0.4",
-		"@fal-ai/client": "^1.2.0",
+		"@fal-ai/client": "^1.0.0",
+		"@langchain/cloudflare": "^0.1.0",
+		"@sentry/esbuild-plugin": "^2.22.7",
+		"agent-twitter-client": "^0.0.16",
 		"ai": "^4.0.3",
-		"dotenv": "^16.4.5",
+		"dotenv": "^16.4.7",
 		"js-sha1": "^0.7.0",
 		"js-tiktoken": "^1.0.15",
 		"langchain": "^0.3.6",
@@ -15,13 +19,29 @@
 		"rollup-plugin-node-polyfills": "^0.2.1",
 		"tiktoken": "^1.0.17",
 		"together-ai": "^0.9.0",
+		"toucan-js": "^4.0.0",
+		"twitter-api-v2": "^1.18.2",
 		"unique-names-generator": "^4.7.1",
 		"uuid": "^11.0.3",
 		"wrangler": "^3.82.0"
 	},
+	"devDependencies": {
+		"buffer": "^6.0.3",
+		"crypto-browserify": "^3.12.1",
+		"esbuild": "^0.24.0",
+		"esbuild-plugin-polyfill-node": "^0.3.0",
+		"path-browserify": "^1.0.1",
+		"process": "^0.11.10"
+	},
 	"external": [
-		"fastembed",
-		"langchain/text_splitter",
-		"@fal-ai/client"
-	]
+		"buffer",
+		"path",
+		"process",
+		"@langchain/core/utils/tiktoken"
+	],
+	"scripts": {
+		"build": "node build.js",
+		"dev": "wrangler dev",
+		"deploy": "wrangler deploy"
+	}
 }

@@ -479,7 +479,12 @@ export class UserAuthDO {
 
 				case '/verify-key': {
 					const { apiKey } = body;
+					// log where this came from
+					console.log('verify-key', apiKey);
+					// log where this request originated
+					console.log('request.origin', request.origin);
 					const verifyResponse = await this.verifyApiKey(apiKey);
+					console.log("verifyResponse", verifyResponse);
 					return new Response(JSON.stringify(verifyResponse));
 				}
 
