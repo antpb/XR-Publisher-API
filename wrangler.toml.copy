@@ -1,9 +1,14 @@
 name = "xr-publisher"
-main = "src/worker.js"
-compatibility_date = "2024-11-04"
+main = "dist/worker.js"
+compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 account_id = ""
 
+[[rules]]
+type = "ESModule"
+globs = ["**/*.js"]
+
+# Rest of your existing configuration...
 kv_namespaces = [
     { binding = "VISIT_COUNTS", id = "" }
 ]
@@ -14,7 +19,6 @@ binding = "AI"
 [observability]
 enabled = true
 head_sampling_rate = 1
-
 
 [triggers]
 crons = ["*/5 * * * *"]
@@ -45,17 +49,20 @@ new_sqlite_classes = ["CharacterRegistryDO"]
 
 [vars]
 ENVIRONMENT = "production"
-WORLD_BUCKET_URL = ""
-OPENAI_API_KEY = ""
-ANTHROPIC_API_KEY = ""
-CF_ACCOUNT_ID = ""
-CF_GATEWAY_ID = "agent-gateway"
-
+WORLD_BUCKET_URL = "https://your-world-bucket-url"
+OPENAI_API_KEY = "your-openai-api-key"
+ANTHROPIC_API_KEY = "your-anthropic-api-key"
+CF_ACCOUNT_ID = "your-cf-account-id"
+CF_GATEWAY_ID = "your-cf-gateway-id"
+SENTRY_DSN = "your-sentry-dsn"
+SENTRY_ORG = "your-sentry-org"
+SENTRY_PROJECT = "your-sentry-project"
+SENTRY_AUTH_TOKEN = "your-sentry-auth-token"
 
 [[r2_buckets]]
 binding = "WORLD_BUCKET"
-bucket_name = "xr-publisher-bucket"
-preview_bucket_name = "xr-publisher-bucket-preview"
+bucket_name = "your-bucket-name"
+preview_bucket_name = "your-preview-bucket-name"
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
