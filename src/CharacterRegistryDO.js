@@ -1552,80 +1552,70 @@ export class CharacterRegistryDO {
 		try {
 			// Get session with room_id
 			const dbSessions = await this.sql.exec(`
-			SELECT cs.*, c.author, c.name, cs.room_id
-			FROM character_sessions cs
-			JOIN characters c ON cs.character_id = c.id
-			WHERE cs.id = ?
-		  `, sessionId).toArray();
-
+				SELECT cs.*, c.author, c.name, cs.room_id
+				FROM character_sessions cs
+				JOIN characters c ON cs.character_id = c.id
+				WHERE cs.id = ?
+			`, sessionId).toArray();
+	
 			if (!dbSessions.length) {
 				throw new Error('Session not found');
 			}
 			const dbSession = dbSessions[0];
-
+	
 			// Check if we already have an active session for this room
 			let activeSession = this.#sessions.get(dbSession.room_id);
+			
+			// If we have an active session with a runtime, return it
 			if (activeSession?.runtime) {
+				if (updatedCharacter) {
+					activeSession.runtime.settings = updatedCharacter.settings;
+				}
 				return activeSession;
 			}
-			if (!activeSession?.runtime) {
-				console.error('Session runtime not initialized:', {
-					hasSession: !!activeSession,
-					sessionId,
-					roomId: activeSession?.roomId
-				});
-				throw new Error('Session runtime not initialized');
-			}
-			
-			// Get character data
+	
+			// If we have a session but no runtime, or no session at all, we need to initialize
 			const characters = await this.sql.exec(`
-			SELECT * 
-			FROM characters
-			WHERE id = ?
-		  `, dbSession.character_id).toArray();
-
+				SELECT * 
+				FROM characters
+				WHERE id = ?
+			`, dbSession.character_id).toArray();
+	
 			if (!characters.length) {
 				throw new Error('Character not found');
 			}
+			
 			const character = characters[0];
 			if (updatedCharacter) {
 				character.settings = updatedCharacter.settings;
 			}
-			// console.log("Session and character data:", {
-			// 	sessionId: dbSession.id,
-			// 	characterId: character.id,
-			// 	character
-			// });
-
-			// Create active session with room ID
+	
+			// Create active session
 			activeSession = {
-				id: dbSession.id, // Ensure we store the session ID
-				sessionId: dbSession.id, // Store it in both places for safety
+				id: dbSession.id,
+				sessionId: dbSession.id,
 				character,
 				roomId: dbSession.room_id,
 				createdAt: new Date(dbSession.created_at),
 				lastActive: new Date()
 			};
-
+	
+			// Get secrets and initialize runtime
 			const secrets = await this.getCharacterSecrets(character.id);
-
-			// Initialize runtime
 			const runtime = await this.initializeRuntime(character, secrets);
 			activeSession.runtime = runtime;
-			if (updatedCharacter) {
-				activeSession.runtime.settings = updatedCharacter.settings;
-			}
-
+	
 			// Store session using room ID as key
 			this.#sessions.set(dbSession.room_id, activeSession);
-
+	
 			return activeSession;
+			
 		} catch (error) {
-			console.error('Char View Session initialization error:', error);
+			console.error('Session initialization error:', error);
 			throw error;
 		}
 	}
-
+	
 	async initializeRuntime(character, secrets) {
 		try {
 			globalThis.encoding_for_model = () => ({
@@ -1674,136 +1664,109 @@ export class CharacterRegistryDO {
 						runtime.modelProvider = modelProvider;
 						runtime.settings.USE_SIMPLE_TOKENIZER = true;
 						runtime.character.settings.useSimpleTokenizer = true;
-
-						// Get full context from runtime memory managers with proper fallbacks
+			
+						// Get conversation history
 						const conversationHistory = await runtime.messageManager.getMemories({
 							roomId: message.roomId,
 							count: 10,
 							type: 'message',
 							unique: false
 						}) || [];
-
-						// Get user memories with proper error handling
+			
+						// Get user memories
 						const userMemories = await runtime.messageManager.getMemoriesByRoomIds({
 							agentId: message.userId,
 							roomIds: [message.roomId],
 							count: 5
 						}) || [];
-
-						console.log("User memories:", userMemories);
-
-						// Ensure safe access to memory collections
-						const relatedMemories = [];
-						const recentDescriptions = [];
-
-						// Format memories section with null checks
+			
+						// Format the memory sections
 						const memoriesSection = `
 			Recent Interactions with User:
-			${Array.isArray(userMemories) ? userMemories.map(m => {
-							const speaker = m.userId === runtime.agentId ? 'Agent' : 'User';
-							return `- ${speaker}: ${m.content?.text || 'Unknown message'}`;
-						}).join('\n') : ''}
+			${userMemories.map(m => {
+				const speaker = m.userId === runtime.agentId ? 'Agent' : 'User';
+				return `- ${speaker}: ${m.content?.text || 'Unknown message'}`;
+			}).join('\n')}`;
 			
-			Related Context:
-			${Array.isArray(relatedMemories) ? relatedMemories.map(m => `- ${m.content?.text || 'No context'}`).join('\n') : ''}
-			
-			User Information:
-			${Array.isArray(recentDescriptions) ? recentDescriptions.map(d => `- ${d.content?.text || 'No description'}`).join('\n') : ''}`;
-
-						// Safely access character properties
-						const characterBio = Array.isArray(runtime.character.bio)
-							? runtime.character.bio.join(' ')
-							: runtime.character.bio || '';
-
-						// Craft rich system message with null checks
-						const systemMessage = `You are ${runtime.character.name || 'Assistant'}. ${characterBio}
+						// Create system message
+						const systemMessage = `You are ${runtime.character.name}. ${runtime.character.bio}
 			
 			Key Character Traits:
-			${Array.isArray(runtime.character.adjectives) ? runtime.character.adjectives.map(adj => `- ${adj}`).join('\n') : 'No specific traits defined'}
-			
-			Your Areas of Interest:
-			${Array.isArray(runtime.character.topics) ? runtime.character.topics.slice(0, 5).map(topic => `- ${topic}`).join('\n') : 'No specific interests defined'}
+			${runtime.character.adjectives.map(adj => `- ${adj}`).join('\n')}
 			
 			Style Guidelines:
-			${Array.isArray(runtime.character.style?.all) ? runtime.character.style.all.map(style => `- ${style}`).join('\n') : ''}
-			${Array.isArray(runtime.character.style?.chat) ? runtime.character.style.chat.map(style => `- ${style}`).join('\n') : ''}
+			${runtime.character.style?.all.map(style => `- ${style}`).join('\n')}
+			${runtime.character.style?.chat.map(style => `- ${style}`).join('\n')}
 			
 			${memoriesSection}
 			
-			Remember these previous interactions and use them to inform your responses while maintaining your character's personality.`;
-
-						// Build conversation context
-						const context = {
-							messages: [
-								{
-									role: "system",
-									content: systemMessage
-								},
-								// Add conversation history with proper role mapping
-								...(Array.isArray(conversationHistory) ? conversationHistory.reverse().map(msg => {
-									// Determine the correct role based on message sender
-									let role;
-									if (msg.userId === runtime.agentId) {
-										role = "assistant";
-									} else if (msg.userId) {
-										role = "user";
-									} else {
-										// Skip messages with no userId
-										return null;
-									}
-
-									return {
-										role,
-										content: msg.content?.text || '',
-										name: msg.userName || undefined  // Include username if available
-									};
-								}).filter(Boolean) : []),  // Remove any null entries
-								// Add current message
-								{
-									role: "user",
-									content: message,  // Use the raw message text
-									name: message.userName || undefined
-								}
-							],
-							text: message
-						};
-
-						const responseContent = await generateMessageResponse({
-							runtime,
-							context: JSON.stringify(context),
-							modelClass: "gpt-4o-mini",
-							cloudflare: {
-								accountId: self.env.CF_ACCOUNT_ID || self.env.vars.CF_ACCOUNT_ID,
-								gatewayId: self.env.CF_GATEWAY_ID || self.env.vars.CF_GATEWAY_ID
+			Remember these previous interactions and maintain your character's personality.`;
+			
+						// Build conversation messages
+						const messages = [
+							{
+								role: "system",
+								content: systemMessage
+							},
+							...conversationHistory.reverse().map(msg => ({
+								role: msg.userId === runtime.agentId ? "assistant" : "user",
+								content: msg.content?.text || '',
+								name: msg.userName
+							})),
+							{
+								role: "user",
+								content: message.text,
+								name: message.userName
 							}
+						];
+			
+						// Make API call with proper timeout
+						const response = await fetch(`https://gateway.ai.cloudflare.com/v1/${self.env.CF_ACCOUNT_ID}/${self.env.CF_GATEWAY_ID}/openai/chat/completions`, {
+							method: 'POST',
+							headers: {
+								'Content-Type': 'application/json',
+								'Authorization': `Bearer ${runtime.settings?.openai_api_key || self.env.OPENAI_API_KEY}`
+							},
+							body: JSON.stringify({
+								model: runtime.settings?.model || 'gpt-4',
+								messages: messages,
+								max_tokens: 150,
+								temperature: 0.7,
+								presence_penalty: 0.6
+							})
 						});
-
+			
+						if (!response.ok) {
+							throw new Error(`API call failed: ${response.status}`);
+						}
+			
+						const result = await response.json();
+						const responseText = result.choices[0].message.content;
+			
 						const responseMessage = {
 							id: crypto.randomUUID(),
-							text: responseContent.text,
+							text: responseText,
 							createdAt: Date.now(),
 							userId: runtime.agentId,
 							roomId: message.roomId,
 							content: {
-								text: responseContent.text,
+								text: responseText,
 								action: "RESPOND"
 							}
 						};
-
+			
 						await runtime.databaseAdapter.createMemory({
 							...responseMessage,
 							type: 'message',
 							isUnique: false
 						});
-
-						console.log("Generated response message:", responseMessage);
-
+			
 						if (callback) {
 							await callback([responseMessage]);
 						}
-
+			
 						return [responseMessage];
-
+			
 					} catch (error) {
 						console.error("Error in message action handler:", error);
 						const errorMessage = {
@@ -1817,18 +1780,14 @@ export class CharacterRegistryDO {
 								action: "RESPOND"
 							}
 						};
-
+			
 						if (callback) {
 							await callback([errorMessage]);
 						}
-
+			
 						return [errorMessage];
 					}
-				},
-				examples: [[
-					{ user: "user1", content: { text: "Hello there!" } },
-					{ user: "assistant", content: { text: "Hi! How are you today?", action: "RESPOND" } }
-				]]
+				}
 			};
 
 			const databaseAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
@@ -2101,7 +2060,7 @@ export class CharacterRegistryDO {
 					reject(error);
 				}
 			});
-
+			console.log("response is", aiResponse);
 			const responseText = aiResponse?.[0]?.content?.text || 'No response generated';
 
 			// Store AI response
@@ -2140,52 +2099,16 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async handleMessage(sessionId, message, nonce = null, apiKey = null) { // Add apiKey parameter
+	async handleMessage(sessionId, message, nonce = null, apiKey = null) {
 		try {
 			console.log("Starting message handling with:", { sessionId, nonce });
-
-			// If we have an API key, verify it and get user info
-			let userInfo = null;
-			if (apiKey) {
-				const id = this.env.USER_AUTH.idFromName("global");
-				const auth = this.env.USER_AUTH.get(id);
-
-				// Verify API key for thing
-				const verifyResponse = await auth.fetch(new Request('http://internal/verify-key', {
-					method: 'POST',
-					body: JSON.stringify({ apiKey })
-				}));
-
-				const verifyResult = await verifyResponse.json();
-
-				console.log("verified reponse is", verifyResult);
-
-				if (verifyResult.valid) {
-					const username = verifyResult.username;
-					if (username) {
-						userInfo = { userId: username, userName: username };
-					}
-				}
-			}
-
-			// Rest of your existing nonce validation code...
-			if (nonce) {
-				const isValid = await this.nonceManager.validateNonce(sessionId, nonce);
-				if (!isValid) {
-					const newSession = await this.initializeSession(sessionId);
-					if (!newSession) {
-						throw new Error('Session initialization failed');
-					}
-					sessionId = newSession.sessionId || newSession.id;
-				}
-			}
-
+	
 			let activeSession = await this.initializeSession(sessionId);
 			if (!activeSession?.roomId) {
 				throw new Error('Session initialization failed - no roomId');
 			}
-
-			// Use authenticated user info if available, otherwise generate guest info
+	
+			// Store user message
 			const userMemoryData = {
 				id: crypto.randomUUID(),
 				type: 'message',
@@ -2193,95 +2116,129 @@ export class CharacterRegistryDO {
 					text: message,
 					model: 'gpt-4o-mini'
 				},
-				userId: userInfo?.userId || null,  // Only set for authenticated users
-				userName: userInfo?.userName || `guest-${crypto.randomUUID().slice(0, 8)}`,
+				userId: apiKey ? userInfo?.userId : null,
+				userName: apiKey ? userInfo?.userName : `guest-${crypto.randomUUID().slice(0, 8)}`,
 				roomId: activeSession.roomId,
 				agentId: activeSession.character.id,
 				createdAt: Date.now()
 			};
-
+	
 			await this.state.storage.transaction(async (txn) => {
 				await activeSession.runtime.databaseAdapter.createMemory(userMemoryData);
 			});
-			console.log('Starting message processing:', {
-				hasRuntime: !!activeSession?.runtime,
-				hasProcessActions: !!activeSession?.runtime?.processActions,
-				sessionId,
-				roomId: activeSession?.roomId
-			});
-			
-			console.log("activesession character is", activeSession.character);
-			// Process AI response
-			const aiResponse = await Promise.race([
-				activeSession.runtime.processActions(
-					{
-						id: userMemoryData.id,
-						text: message,
-						createdAt: userMemoryData.createdAt,
-						userId: userMemoryData.userId,
-						userName: userMemoryData.userName,
-						roomId: activeSession.roomId,
-						model: activeSession.runtime.settings?.model || 'gpt-4o-mini',
-						modelProvider: activeSession.runtime.settings?.modelProvider || 'openai',
-						content: userMemoryData.content
-					},
-					[{
-						user: activeSession.character.name,
-						model: activeSession.runtime.settings?.model || 'gpt-4o-mini',
-						modelProvider: activeSession.runtime.settings?.modelProvider || 'openai',
-						content: {
-							text: message,
-							action: 'RESPOND',
-							model: activeSession.runtime.settings?.model || 'gpt-4o-mini'
-						}
-					}],
-					activeSession.runtime.settings || {
-						model: 'gpt-4o-mini',
-						modelProvider: 'openai'
-					}
-				),
-				new Promise((_, reject) => setTimeout(() => reject(new Error('Response timeout')), 30000))
-			]);
-			
-			
-
-			const responseText = aiResponse?.[0]?.content?.text || 'No response generated';
-
-			// Store AI response
-			const aiMemoryData = {
-				id: crypto.randomUUID(),
-				type: 'message',
-				content: {
-					text: responseText,
-					model: 'gpt-4o-mini',
-					action: 'RESPOND'
+	
+			// Prepare API call parameters
+			const messages = [
+				{
+					role: "system",
+					content: `You are ${activeSession.character.name}. ${activeSession.character.bio}\n\nStyle: ${activeSession.character.style.all.join(", ")}`
 				},
-				userId: null, // AI has no user ID
-				userName: activeSession.character.name, // Use character name for AI responses
-				roomId: activeSession.roomId,
-				agentId: activeSession.character.id,
-				createdAt: Date.now()
-			};
-
-			await this.state.storage.transaction(async (txn) => {
-				await activeSession.runtime.databaseAdapter.createMemory(aiMemoryData);
+				{
+					role: "user",
+					content: message
+				}
+			];
+	
+			console.log("Attempting OpenAI API call with:", {
+				accountId: this.env.CF_ACCOUNT_ID,
+				gatewayId: this.env.CF_GATEWAY_ID,
+				messageCount: messages.length
 			});
-
-			// Create new nonce
-			const { nonce: newNonce } = await this.nonceManager.createNonce(activeSession.roomId, sessionId);
-
-			return {
-				text: responseText,
-				nonce: newNonce,
-				sessionId: sessionId,
-				roomId: activeSession.roomId
-			};
-
+	
+			// Make API call with explicit timeout
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), 25000);
+	
+			try {
+				const response = await fetch(
+					`https://gateway.ai.cloudflare.com/v1/${this.env.CF_ACCOUNT_ID}/${this.env.CF_GATEWAY_ID}/openai/chat/completions`,
+					{
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'Authorization': `Bearer ${this.env.OPENAI_API_KEY}`
+						},
+						body: JSON.stringify({
+							model: 'gpt-4o-mini',
+							messages,
+							max_tokens: 150,
+							temperature: 0.7,
+							presence_penalty: 0.6
+						}),
+						signal: controller.signal
+					}
+				);
+	
+				clearTimeout(timeout);
+	
+				if (!response.ok) {
+					const errorText = await response.text();
+					console.error("OpenAI API error:", {
+						status: response.status,
+						statusText: response.statusText,
+						error: errorText
+					});
+					throw new Error(`API call failed: ${response.status} - ${errorText}`);
+				}
+	
+				const result = await response.json();
+				console.log("API response received:", {
+					hasChoices: !!result.choices,
+					choiceCount: result.choices?.length
+				});
+	
+				const responseText = result.choices[0].message.content;
+	
+				// Store AI response
+				const aiMemoryData = {
+					id: crypto.randomUUID(),
+					type: 'message',
+					content: {
+						text: responseText,
+						model: 'gpt-4o-mini',
+						action: 'RESPOND'
+					},
+					userId: null,
+					userName: activeSession.character.name,
+					roomId: activeSession.roomId,
+					agentId: activeSession.character.id,
+					createdAt: Date.now()
+				};
+	
+				await this.state.storage.transaction(async (txn) => {
+					await activeSession.runtime.databaseAdapter.createMemory(aiMemoryData);
+				});
+	
+				// Create new nonce
+				const { nonce: newNonce } = await this.nonceManager.createNonce(
+					activeSession.roomId,
+					sessionId
+				);
+	
+				return {
+					text: responseText,
+					nonce: newNonce,
+					sessionId: sessionId,
+					roomId: activeSession.roomId
+				};
+			} catch (error) {
+				if (error.name === 'AbortError') {
+					throw new Error('API request timed out after 25 seconds');
+				}
+				throw error;
+			} finally {
+				clearTimeout(timeout);
+			}
 		} catch (error) {
-			console.error('Message handling error:', error);
+			console.error('Message handling error:', {
+				error: error.message,
+				stack: error.stack,
+				type: error.constructor.name
+			});
 			throw error;
 		}
 	}
+	
 
 	async deleteCharacter(author, name) {
 		try {
