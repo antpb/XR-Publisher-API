@@ -124,11 +124,25 @@ class SecureHtmlService {
 			.transform(response);
 	}
 
+	// Slugify function that preserves case but handles spaces and special characters
+	slugifyCharacterName(name) {
+		return name
+			.trim()
+			.replace(/[^\w\s-]/g, '') // Remove special characters except spaces and hyphens
+			.replace(/\s+/g, '-');    // Replace spaces with hyphens
+	}
+
+	// Function to normalize character name for comparison
+	normalizeCharacterName(name) {
+		return name.trim().toLowerCase();
+	}
+
 	sanitizeCharacterData(character) {
 		if (!character) return null;
 
 		return {
 			name: this.sanitizeText(character.name),
+			slug: this.slugifyCharacterName(this.sanitizeText(this.normalizeCharacterName(character.name))),
 			modelProvider: this.sanitizeText(character.modelProvider || 'LLAMALOCAL'),
 			bio: this.sanitizeText(character.bio),
 			author: this.sanitizeText(character.author),

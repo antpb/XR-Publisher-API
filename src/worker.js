@@ -1556,7 +1556,7 @@ export default {
 				console.log('Got CHARACTER_REGISTRY DO instance', registry);
 				const characterResponse = await registry.fetch(new Request('http://internal/get-character', {
 					method: 'POST',
-					body: JSON.stringify({ author, name: characterName })
+					body: JSON.stringify({ author, slug: characterName })
 				}));
 
 				if (!characterResponse.ok) {
@@ -1643,7 +1643,7 @@ export default {
 		try {
 			const url = new URL(request.url);
 			const author = url.searchParams.get('author');
-			const name = url.searchParams.get('name');
+			const name = url.searchParams.get('slug');
 
 			if (!author || !name) {
 				return new Response(JSON.stringify({ error: 'Missing parameters' }), {
@@ -1658,7 +1658,7 @@ export default {
 
 			const response = await registry.fetch(new Request('http://internal/get-character', {
 				method: 'POST',
-				body: JSON.stringify({ author, name })
+				body: JSON.stringify({ author, slug: name })
 			}));
 
 			if (!response.ok) {
@@ -1700,7 +1700,7 @@ export default {
 			// Initialize session using the same pattern as get-character
 			const response = await registry.fetch(new Request('http://internal/initialize-session', {
 				method: 'POST',
-				body: JSON.stringify({ author, name, roomId })
+				body: JSON.stringify({ author, slug: name, roomId })
 			}));
 
 			if (!response.ok) {
@@ -1784,7 +1784,7 @@ export default {
 
 			// Clear cache for this character
 			const cache = caches.default;
-			const cacheKey = `https://${request.headers.get('host')}/characters/${userId}/${character.name}`;
+			const cacheKey = `https://${request.headers.get('host')}/characters/${userId}/${character.slug}`;
 			console.log('Clearing cache for:', cacheKey);
 			await cache.delete(cacheKey);
 
@@ -1857,8 +1857,8 @@ export default {
 
 			// Clear cache for this character
 			const cache = caches.default;
-			await cache.delete(`https://${request.headers.get('host')}/characters/${userId}/${character.name}`);
-			await cache.delete(`https://${request.headers.get('host')}/character-data?author=${userId}&name=${character.name}`);
+			await cache.delete(`https://${request.headers.get('host')}/characters/${userId}/${character.slug}`);
+			await cache.delete(`https://${request.headers.get('host')}/character-data?author=${userId}&name=${character.slug}`);
 			await cache.delete(`https://${request.headers.get('host')}/author-characters?author=${userId}`);
 
 			return new Response(JSON.stringify({
@@ -1929,8 +1929,8 @@ export default {
 
 			// Clear cache for this character
 			const cache = caches.default;
-			await cache.delete(`https://${request.headers.get('host')}/characters/${userId}/${character.name}`);
-			await cache.delete(`https://${request.headers.get('host')}/character-data?author=${userId}&name=${character.name}`);
+			await cache.delete(`https://${request.headers.get('host')}/characters/${userId}/${character.slug}`);
+			await cache.delete(`https://${request.headers.get('host')}/character-data?author=${userId}&name=${character.slug}`);
 			await cache.delete(`https://${request.headers.get('host')}/author-characters?author=${userId}`);
 
 			return new Response(JSON.stringify({

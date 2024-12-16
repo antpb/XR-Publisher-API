@@ -8,6 +8,19 @@ const CORS_HEADERS = {
 	'Access-Control-Max-Age': '86400',
 };
 
+// Slugify function that preserves case but handles spaces and special characters
+function slugifyCharacterName(name) {
+	return name
+		.trim()
+		.replace(/[^\w\s-]/g, '') // Remove special characters except spaces and hyphens
+		.replace(/\s+/g, '-');    // Replace spaces with hyphens
+}
+
+// Function to normalize character name for comparison
+function normalizeCharacterName(name) {
+	return name.trim().toLowerCase();
+}
+
 class NonceManager {
 	constructor(sql) {
 		this.sql = sql;
@@ -126,6 +139,7 @@ export class CharacterRegistryDO {
 		await this.initializeSchema();
 		// await this.nonceManager.initializeSchema();
 	}
+
 	async initializeSchema() {
 		try {
 			console.log('Enabling foreign keys...');
@@ -138,6 +152,7 @@ export class CharacterRegistryDO {
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
 				author TEXT NOT NULL,
 				name TEXT NOT NULL,
+				slug TEXT,
 				model_provider TEXT NOT NULL,
 				bio TEXT,
 				settings TEXT,
@@ -195,6 +210,7 @@ export class CharacterRegistryDO {
 			await this.sql.exec(`
 				CREATE INDEX IF NOT EXISTS idx_characters_author ON characters(author);
 				CREATE INDEX IF NOT EXISTS idx_characters_name ON characters(name);
+				CREATE INDEX IF NOT EXISTS idx_characters_slug ON characters(author, slug);  /* Added slug index */
 				CREATE INDEX IF NOT EXISTS idx_character_sessions_id ON character_sessions(id);
 				CREATE INDEX IF NOT EXISTS idx_character_secrets_id ON character_secrets(character_id)
 			`);
@@ -213,6 +229,8 @@ export class CharacterRegistryDO {
 			throw error;
 		}
 	}
+
+
 	async migrateMemorySchema() {
 		try {
 			console.log('Starting memory schema migration...');
@@ -546,10 +564,10 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async initializeCharacterRoom(author, name, roomId) {
+	async initializeCharacterRoom(author, slug, roomId) {
 		try {
-			console.log('Initializing session for:', author, name, 'in room:', roomId);
-			const character = await this.getCharacter(author, name);
+			console.log('Initializing session for:', author, slug, 'in room:', roomId);
+			const character = await this.getCharacter(author, slug);
 
 			if (!character) {
 				throw new Error('Character not found');
@@ -618,6 +636,7 @@ export class CharacterRegistryDO {
 				nonce,
 				config: {
 					name: character.name,
+					slug: character.slug,
 					modelProvider: character.modelProvider,
 					bio: character.bio,
 					vrmUrl: character.vrmUrl,
@@ -823,8 +842,8 @@ export class CharacterRegistryDO {
 	async handleMigrateSchema() {
 		try {
 			// First ensure base schema exists
-			await this.initializeSchema();
-			console.log('Base schema initialized');
+			// await this.initializeSchema();
+			// console.log('Base schema initialized');
 
 			// // Then add room support
 			// await this.addRoomSupport();
@@ -845,6 +864,7 @@ export class CharacterRegistryDO {
 				message: 'Schema migration completed successfully',
 				details: {
 					baseSchema: true,
+					characterSlugs: true,  // Add this
 					roomSupport: true,
 					imageFields: true
 				}
@@ -868,6 +888,7 @@ export class CharacterRegistryDO {
 		const cleanedCharacter = {
 			...characterData,
 			name: characterData.name,
+			slug: this.generateSlug(characterData.name),
 			status: characterData.status || 'private',
 			modelProvider: characterData.modelProvider || "openai",
 			clients: characterData.clients || ["DIRECT"],
@@ -892,10 +913,20 @@ export class CharacterRegistryDO {
 		return cleanedCharacter;
 	}
 
+	// Helper function to generate slugs - add this to your class
+	generateSlug(name) {
+		return name
+			.trim()
+			.toLowerCase()
+			.replace(/[^\w\s-]/g, '') // Remove special characters
+			.replace(/\s+/g, '-')     // Replace spaces with hyphens
+			.replace(/-+/g, '-');     // Replace multiple hyphens with single hyphen
+	}
+
 	async createOrUpdateCharacter(author, characterData) {
 		try {
 			return await this.state.storage.transaction(async (txn) => {
-				// Validate required fields
+				// Existing validation
 				if (!author?.trim()) {
 					throw new Error('Author is required');
 				}
@@ -904,8 +935,6 @@ export class CharacterRegistryDO {
 				}
 
 				const bio = Array.isArray(characterData.bio) ? characterData.bio.join('\n') : characterData.bio;
-
-				// Extract secrets before storing settings
 				const secrets = characterData.settings?.secrets;
 				const settingsWithoutSecrets = {
 					...characterData.settings,
@@ -913,43 +942,47 @@ export class CharacterRegistryDO {
 				};
 
 				const cleanedData = await this.cleanCharacterData(characterData);
-				console.log("Cleaned character data:", cleanedData);
 
-				// Insert/update main character record
+				// Generate slug
+				const slug = this.generateSlug(cleanedData.name);
+
+				// Modified INSERT to include slug
 				const result = await this.sql.exec(`
-					INSERT INTO characters (
-					  author,
-					  name,
-					  model_provider,
-					  bio,
-					  vrm_url,
-					  profile_img,
-					  banner_img,
-					  settings,
-					  status
-					) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-					ON CONFLICT(author, name) DO UPDATE SET
-					  model_provider = EXCLUDED.model_provider,
-					  bio = EXCLUDED.bio,
-					  vrm_url = EXCLUDED.vrm_url,
-					  profile_img = EXCLUDED.profile_img,
-					  banner_img = EXCLUDED.banner_img,
-					  settings = EXCLUDED.settings,
-					  status = EXCLUDED.status,
-					  updated_at = CURRENT_TIMESTAMP
-					RETURNING *
-				  `,
+			  INSERT INTO characters (
+				author,
+				name,
+				slug,
+				model_provider,
+				bio,
+				vrm_url,
+				profile_img,
+				banner_img,
+				settings,
+				status
+			  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			  ON CONFLICT(author, name) DO UPDATE SET
+				slug = EXCLUDED.slug,
+				model_provider = EXCLUDED.model_provider,
+				bio = EXCLUDED.bio,
+				vrm_url = EXCLUDED.vrm_url,
+				profile_img = EXCLUDED.profile_img,
+				banner_img = EXCLUDED.banner_img,
+				settings = EXCLUDED.settings,
+				status = EXCLUDED.status,
+				updated_at = CURRENT_TIMESTAMP
+			  RETURNING *
+			`,
 					author.trim(),
 					cleanedData.name.trim(),
+					slug,
 					cleanedData.modelProvider || 'LLAMALOCAL',
 					bio || '',
 					cleanedData.vrmUrl || null,
 					cleanedData.profileImg || null,
 					cleanedData.bannerImg || null,
 					JSON.stringify(settingsWithoutSecrets),
-					cleanedData.status || 'private'    // Add this
+					cleanedData.status || 'private'
 				).toArray();
-
 				if (!result.length) {
 					throw new Error('Failed to create/update character record');
 				}
@@ -1066,7 +1099,6 @@ export class CharacterRegistryDO {
 
 	async getCharactersByAuthor(author) {
 		try {
-			// Base character query with joins
 			const characters = await this.sql.exec(`
 			SELECT c.*, 
 			  c.vrm_url,
@@ -1076,6 +1108,7 @@ export class CharacterRegistryDO {
 			  c.bio,
 			  c.status,
 			  c.settings,
+			  c.slug,
 			  c.created_at,
 			  c.updated_at,
 			  GROUP_CONCAT(DISTINCT cc.client) as clients,
@@ -1095,7 +1128,6 @@ export class CharacterRegistryDO {
 		  `, author).toArray();
 
 			return Promise.all(characters.map(async (char) => {
-				// Get message examples
 				const messages = await this.sql.exec(`
 			  SELECT conversation_id, user, content, message_order
 			  FROM character_messages
@@ -1103,14 +1135,12 @@ export class CharacterRegistryDO {
 			  ORDER BY conversation_id, message_order
 			`, char.id).toArray();
 
-				// Get styles with proper categorization
 				const styles = await this.sql.exec(`
 			  SELECT category, style_text
 			  FROM character_styles
 			  WHERE character_id = ?
 			`, char.id).toArray();
 
-				// Group styles by category
 				const stylesByCategory = {
 					all: styles.filter(s => s.category === 'all').map(s => s.style_text),
 					chat: styles.filter(s => s.category === 'chat').map(s => s.style_text),
@@ -1119,6 +1149,7 @@ export class CharacterRegistryDO {
 
 				return {
 					name: char.name,
+					slug: char.slug,     /* Add slug to return object */
 					status: char.status || 'private',
 					modelProvider: char.model_provider,
 					clients: char.clients ? char.clients.split(',') : ['DIRECT'],
@@ -1145,12 +1176,13 @@ export class CharacterRegistryDO {
 
 
 
-	async getCharacter(author, name) {
+
+	async getCharacter(author, slug) {  // Changed parameter name from 'name' to 'slug'
 		try {
 			const characterCheck = await this.sql.exec(`
 			SELECT id FROM characters 
-			WHERE author = ? AND name = ?
-		  `, author, name).toArray();
+			WHERE author = ? AND slug = ?   /* Changed from name to slug */
+		  `, author, slug).toArray();
 
 			if (characterCheck.length === 0) {
 				return null;
@@ -1167,6 +1199,7 @@ export class CharacterRegistryDO {
 			  c.bio,
 			  c.status,
 			  c.settings,
+			  c.slug,
 			  c.created_at,
 			  c.updated_at,
 			  GROUP_CONCAT(DISTINCT cc.client) as clients,
@@ -1180,10 +1213,10 @@ export class CharacterRegistryDO {
 			LEFT JOIN character_posts cp ON c.id = cp.character_id
 			LEFT JOIN character_topics ct ON c.id = ct.character_id
 			LEFT JOIN character_adjectives ca ON c.id = ca.character_id
-			WHERE c.author = ? AND c.name = ?
+			WHERE c.author = ? AND c.slug = ?
 			GROUP BY c.id
 			LIMIT 1
-		  `, author, name).toArray();
+		  `, author, slug).toArray();
 
 			if (character.length === 0) {
 				return null;
@@ -1191,7 +1224,7 @@ export class CharacterRegistryDO {
 
 			const char = character[0];
 
-			// Get message examples
+			// Rest remains the same
 			const messages = await this.sql.exec(`
 			SELECT conversation_id, user, content, message_order
 			FROM character_messages
@@ -1199,14 +1232,12 @@ export class CharacterRegistryDO {
 			ORDER BY conversation_id, message_order
 		  `, characterId).toArray();
 
-			// Get styles with proper categorization
 			const styles = await this.sql.exec(`
 			SELECT category, style_text
 			FROM character_styles
 			WHERE character_id = ?
 		  `, characterId).toArray();
 
-			// Group styles by category
 			const stylesByCategory = {
 				all: styles.filter(s => s.category === 'all').map(s => s.style_text),
 				chat: styles.filter(s => s.category === 'chat').map(s => s.style_text),
@@ -1216,6 +1247,7 @@ export class CharacterRegistryDO {
 			return {
 				id: characterId,
 				name: char.name,
+				slug: char.slug,
 				status: char.status || 'private',
 				modelProvider: char.model_provider,
 				clients: char.clients ? char.clients.split(',') : ['DIRECT'],
@@ -1242,31 +1274,31 @@ export class CharacterRegistryDO {
 
 	// Add to CharacterRegistryDO class
 	async getFeaturedCharacters(authors) {
-		// Static list of featured authors
 		const featuredAuthors = ['antpb'];
 		try {
-			// Get characters for each featured author
 			const featuredCharacters = [];
 			for (const author of featuredAuthors) {
 				const characters = await this.sql.exec(`
-                SELECT c.*, 
-                c.vrm_url,  
+			  SELECT c.*, 
+				c.vrm_url,  
 				c.profile_img,
 				c.banner_img,         
-                c.model_provider,
-                c.bio,
+				c.model_provider,
+				c.bio,
 				c.status,
-                c.settings,
-                c.created_at,
-                c.updated_at
-                FROM characters c
-                WHERE c.author = ?
-                ORDER BY c.updated_at ASC
-            `, author).toArray();
+				c.slug,           /* Add slug to selection */
+				c.settings,
+				c.created_at,
+				c.updated_at
+			  FROM characters c
+			  WHERE c.author = ?
+			  ORDER BY c.updated_at ASC
+			`, author).toArray();
 
 				featuredCharacters.push(...characters.map(char => ({
 					author,
 					name: char.name,
+					slug: char.slug,     /* Add slug to return object */
 					bio: char.bio,
 					status: char.status || 'private',
 					vrmUrl: char.vrm_url,
@@ -1284,6 +1316,7 @@ export class CharacterRegistryDO {
 			throw error;
 		}
 	}
+
 
 	groupMessages(messages) {
 		const conversations = {};
@@ -1329,7 +1362,7 @@ export class CharacterRegistryDO {
 			}
 
 			const character = chars[0];
-			console.log('Found character:', character.name);
+			console.log('Found character:', character.name, character.slug);
 
 			// Get existing secrets
 			const secrets = await this.sql.exec(`
@@ -1552,20 +1585,20 @@ export class CharacterRegistryDO {
 		try {
 			// Get session with room_id
 			const dbSessions = await this.sql.exec(`
-				SELECT cs.*, c.author, c.name, cs.room_id
+				SELECT cs.*, c.author, c.name, c.slug, cs.room_id
 				FROM character_sessions cs
 				JOIN characters c ON cs.character_id = c.id
 				WHERE cs.id = ?
 			`, sessionId).toArray();
-	
+
 			if (!dbSessions.length) {
 				throw new Error('Session not found');
 			}
 			const dbSession = dbSessions[0];
-	
+
 			// Check if we already have an active session for this room
 			let activeSession = this.#sessions.get(dbSession.room_id);
-			
+
 			// If we have an active session with a runtime, return it
 			if (activeSession?.runtime) {
 				if (updatedCharacter) {
@@ -1573,23 +1606,23 @@ export class CharacterRegistryDO {
 				}
 				return activeSession;
 			}
-	
+
 			// If we have a session but no runtime, or no session at all, we need to initialize
 			const characters = await this.sql.exec(`
 				SELECT * 
 				FROM characters
 				WHERE id = ?
 			`, dbSession.character_id).toArray();
-	
+
 			if (!characters.length) {
 				throw new Error('Character not found');
 			}
-			
+
 			const character = characters[0];
 			if (updatedCharacter) {
 				character.settings = updatedCharacter.settings;
 			}
-	
+
 			// Create active session
 			activeSession = {
 				id: dbSession.id,
@@ -1599,23 +1632,23 @@ export class CharacterRegistryDO {
 				createdAt: new Date(dbSession.created_at),
 				lastActive: new Date()
 			};
-	
+
 			// Get secrets and initialize runtime
 			const secrets = await this.getCharacterSecrets(character.id);
 			const runtime = await this.initializeRuntime(character, secrets);
 			activeSession.runtime = runtime;
-	
+
 			// Store session using room ID as key
 			this.#sessions.set(dbSession.room_id, activeSession);
-	
+
 			return activeSession;
-			
+
 		} catch (error) {
 			console.error('Session initialization error:', error);
 			throw error;
 		}
 	}
-	
+
 	async initializeRuntime(character, secrets) {
 		try {
 			globalThis.encoding_for_model = () => ({
@@ -1664,7 +1697,7 @@ export class CharacterRegistryDO {
 						runtime.modelProvider = modelProvider;
 						runtime.settings.USE_SIMPLE_TOKENIZER = true;
 						runtime.character.settings.useSimpleTokenizer = true;
-			
+
 						// Get conversation history
 						const conversationHistory = await runtime.messageManager.getMemories({
 							roomId: message.roomId,
@@ -1672,22 +1705,22 @@ export class CharacterRegistryDO {
 							type: 'message',
 							unique: false
 						}) || [];
-			
+
 						// Get user memories
 						const userMemories = await runtime.messageManager.getMemoriesByRoomIds({
 							agentId: message.userId,
 							roomIds: [message.roomId],
 							count: 5
 						}) || [];
-			
+
 						// Format the memory sections
 						const memoriesSection = `
 			Recent Interactions with User:
 			${userMemories.map(m => {
-				const speaker = m.userId === runtime.agentId ? 'Agent' : 'User';
-				return `- ${speaker}: ${m.content?.text || 'Unknown message'}`;
-			}).join('\n')}`;
-			
+							const speaker = m.userId === runtime.agentId ? 'Agent' : 'User';
+							return `- ${speaker}: ${m.content?.text || 'Unknown message'}`;
+						}).join('\n')}`;
+
 						// Create system message
 						const systemMessage = `You are ${runtime.character.name}. ${runtime.character.bio}
 			
@@ -1701,7 +1734,7 @@ export class CharacterRegistryDO {
 			${memoriesSection}
 			
 			Remember these previous interactions and maintain your character's personality.`;
-			
+
 						// Build conversation messages
 						const messages = [
 							{
@@ -1719,7 +1752,7 @@ export class CharacterRegistryDO {
 								name: message.userName
 							}
 						];
-			
+
 						// Make API call with proper timeout
 						const response = await fetch(`https://gateway.ai.cloudflare.com/v1/${self.env.CF_ACCOUNT_ID}/${self.env.CF_GATEWAY_ID}/openai/chat/completions`, {
 							method: 'POST',
@@ -1735,14 +1768,14 @@ export class CharacterRegistryDO {
 								presence_penalty: 0.6
 							})
 						});
-			
+
 						if (!response.ok) {
 							throw new Error(`API call failed: ${response.status}`);
 						}
-			
+
 						const result = await response.json();
 						const responseText = result.choices[0].message.content;
-			
+
 						const responseMessage = {
 							id: crypto.randomUUID(),
 							text: responseText,
@@ -1754,19 +1787,19 @@ export class CharacterRegistryDO {
 								action: "RESPOND"
 							}
 						};
-			
+
 						await runtime.databaseAdapter.createMemory({
 							...responseMessage,
 							type: 'message',
 							isUnique: false
 						});
-			
+
 						if (callback) {
 							await callback([responseMessage]);
 						}
-			
+
 						return [responseMessage];
-			
+
 					} catch (error) {
 						console.error("Error in message action handler:", error);
 						const errorMessage = {
@@ -1780,11 +1813,11 @@ export class CharacterRegistryDO {
 								action: "RESPOND"
 							}
 						};
-			
+
 						if (callback) {
 							await callback([errorMessage]);
 						}
-			
+
 						return [errorMessage];
 					}
 				}
@@ -1938,13 +1971,11 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	// Add this helper method to your CharacterRegistryDO class
 	async createEmptyEmbedding() {
 		// Return a zero vector or null depending on your needs
 		return null;
 	}
 
-	// Add this to your SQLiteMemoryAdapter class
 	async searchMemoriesByEmbedding(embedding, options = {}) {
 		try {
 			// For now, just return recent messages since we can't do vector search
@@ -2072,8 +2103,8 @@ export class CharacterRegistryDO {
 					model: 'gpt-4o-mini',
 					action: 'RESPOND'
 				},
-				userId: null, // AI has no user ID
-				userName: activeSession.character.name, // Use character name for AI responses
+				userId: null,
+				userName: activeSession.character.slug,
 				roomId: activeSession.roomId,
 				agentId: activeSession.character.id,
 				createdAt: Date.now()
@@ -2102,12 +2133,12 @@ export class CharacterRegistryDO {
 	async handleMessage(sessionId, message, nonce = null, apiKey = null) {
 		try {
 			console.log("Starting message handling with:", { sessionId, nonce });
-	
+
 			let activeSession = await this.initializeSession(sessionId);
 			if (!activeSession?.roomId) {
 				throw new Error('Session initialization failed - no roomId');
 			}
-	
+
 			// Store user message
 			const userMemoryData = {
 				id: crypto.randomUUID(),
@@ -2122,11 +2153,11 @@ export class CharacterRegistryDO {
 				agentId: activeSession.character.id,
 				createdAt: Date.now()
 			};
-	
+
 			await this.state.storage.transaction(async (txn) => {
 				await activeSession.runtime.databaseAdapter.createMemory(userMemoryData);
 			});
-	
+
 			// Prepare API call parameters
 			const messages = [
 				{
@@ -2138,17 +2169,17 @@ export class CharacterRegistryDO {
 					content: message
 				}
 			];
-	
+
 			console.log("Attempting OpenAI API call with:", {
 				accountId: this.env.CF_ACCOUNT_ID,
 				gatewayId: this.env.CF_GATEWAY_ID,
 				messageCount: messages.length
 			});
-	
+
 			// Make API call with explicit timeout
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), 25000);
-	
+
 			try {
 				const response = await fetch(
 					`https://gateway.ai.cloudflare.com/v1/${this.env.CF_ACCOUNT_ID}/${this.env.CF_GATEWAY_ID}/openai/chat/completions`,
@@ -2168,9 +2199,9 @@ export class CharacterRegistryDO {
 						signal: controller.signal
 					}
 				);
-	
+
 				clearTimeout(timeout);
-	
+
 				if (!response.ok) {
 					const errorText = await response.text();
 					console.error("OpenAI API error:", {
@@ -2180,15 +2211,15 @@ export class CharacterRegistryDO {
 					});
 					throw new Error(`API call failed: ${response.status} - ${errorText}`);
 				}
-	
+
 				const result = await response.json();
 				console.log("API response received:", {
 					hasChoices: !!result.choices,
 					choiceCount: result.choices?.length
 				});
-	
+
 				const responseText = result.choices[0].message.content;
-	
+
 				// Store AI response
 				const aiMemoryData = {
 					id: crypto.randomUUID(),
@@ -2199,22 +2230,22 @@ export class CharacterRegistryDO {
 						action: 'RESPOND'
 					},
 					userId: null,
-					userName: activeSession.character.name,
+					userName: activeSession.character.slug,
 					roomId: activeSession.roomId,
 					agentId: activeSession.character.id,
 					createdAt: Date.now()
 				};
-	
+
 				await this.state.storage.transaction(async (txn) => {
 					await activeSession.runtime.databaseAdapter.createMemory(aiMemoryData);
 				});
-	
+
 				// Create new nonce
 				const { nonce: newNonce } = await this.nonceManager.createNonce(
 					activeSession.roomId,
 					sessionId
 				);
-	
+
 				return {
 					text: responseText,
 					nonce: newNonce,
@@ -2238,15 +2269,15 @@ export class CharacterRegistryDO {
 			throw error;
 		}
 	}
-	
 
-	async deleteCharacter(author, name) {
+
+	async deleteCharacter(author, slug) {  // Changed from name to slug
 		try {
 			// First, get the character ID
 			const characters = await this.sql.exec(`
-			SELECT id FROM characters 
-			WHERE author = ? AND name = ?
-		  `, author, name).toArray();
+				SELECT id FROM characters 
+				WHERE author = ? AND slug = ?  // Changed from name to slug
+			  `, author, slug).toArray();
 
 			if (!characters.length) {
 				throw new Error('Character not found');
@@ -2254,9 +2285,8 @@ export class CharacterRegistryDO {
 
 			const characterId = characters[0].id;
 
-			// Use Durable Object's transaction
+			// Rest remains the same...
 			await this.state.storage.transaction(async () => {
-				// Delete from dependent tables first
 				await this.sql.exec('DELETE FROM character_secrets WHERE character_id = ?', characterId);
 				await this.sql.exec('DELETE FROM character_clients WHERE character_id = ?', characterId);
 				await this.sql.exec('DELETE FROM character_lore WHERE character_id = ?', characterId);
@@ -2266,8 +2296,6 @@ export class CharacterRegistryDO {
 				await this.sql.exec('DELETE FROM character_styles WHERE character_id = ?', characterId);
 				await this.sql.exec('DELETE FROM character_adjectives WHERE character_id = ?', characterId);
 				await this.sql.exec('DELETE FROM character_sessions WHERE character_id = ?', characterId);
-
-				// Finally delete the character
 				await this.sql.exec('DELETE FROM characters WHERE id = ?', characterId);
 			});
 
@@ -2285,35 +2313,31 @@ export class CharacterRegistryDO {
 
 	async updateCharacterMetadata(author, character) {
 		try {
-			// Extract only metadata fields, explicitly excluding profile/banner images and secrets
 			const bio = Array.isArray(character.bio) ? character.bio.join('\n') : character.bio;
-
-			// Create settings object without secrets
 			const settingsWithoutSecrets = {
 				...character.settings,
 				secrets: undefined
 			};
-			console.log('Updating character metadata:', character);
-			// Update only metadata fields
+
 			const result = await this.sql.exec(`
-			UPDATE characters 
-			SET 
-			  model_provider = ?,
-			  bio = ?,
-			  vrm_url = ?,
-			  settings = ?,
-			  status = ?,
-			  updated_at = CURRENT_TIMESTAMP
-			WHERE author = ? AND name = ?
-			RETURNING *
-		  `,
+				UPDATE characters 
+				SET 
+				  model_provider = ?,
+				  bio = ?,
+				  vrm_url = ?,
+				  settings = ?,
+				  status = ?,
+				  updated_at = CURRENT_TIMESTAMP
+				WHERE author = ? AND slug = ?  // Changed from name to slug
+				RETURNING *
+			  `,
 				character.modelProvider || 'LLAMALOCAL',
 				bio,
 				character.vrmUrl,
 				JSON.stringify(settingsWithoutSecrets),
 				character.status || 'private',
 				author,
-				character.name
+				character.slug  // Changed from character.name
 			).toArray();
 
 			if (!result.length) {
@@ -2409,12 +2433,11 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async updateCharacterImages(author, characterName, updates) {
+	async updateCharacterImages(author, slug, updates) {  // Changed from characterName to slug
 		try {
 			const updateFields = [];
 			const params = [];
 
-			// Build dynamic update query based on provided fields
 			if (updates.profileImg !== undefined) {
 				updateFields.push('profile_img = ?');
 				params.push(updates.profileImg);
@@ -2428,16 +2451,15 @@ export class CharacterRegistryDO {
 				throw new Error('No image updates provided');
 			}
 
-			// Add author and name to params
-			params.push(author, characterName);
+			params.push(author, slug);  // Changed from characterName to slug
 
 			const result = await this.sql.exec(`
-			UPDATE characters 
-			SET ${updateFields.join(', ')},
-				updated_at = CURRENT_TIMESTAMP
-			WHERE author = ? AND name = ?
-			RETURNING *
-		  `, ...params).toArray();
+				UPDATE characters 
+				SET ${updateFields.join(', ')},
+					updated_at = CURRENT_TIMESTAMP
+				WHERE author = ? AND slug = ?  // Changed from name to slug
+				RETURNING *
+			  `, ...params).toArray();
 
 			if (!result.length) {
 				throw new Error('Character not found');
@@ -2450,33 +2472,29 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async updateCharacterSecrets(author, characterName, secrets) {
+	async updateCharacterSecrets(author, slug, secrets) {  // Changed from characterName to slug
 		try {
 			// First get the character ID
 			const characters = await this.sql.exec(`
 				SELECT id FROM characters 
-				WHERE author = ? AND name = ?
-			`, author, characterName).toArray();
-
+				WHERE author = ? AND slug = ?  // Changed from name to slug
+			`, author, slug).toArray();
+	
 			if (!characters.length) {
 				throw new Error('Character not found');
 			}
-
+	
+			// Rest of the function remains the same...
 			const characterId = characters[0].id;
-
-			// Get existing secrets
 			const existingSecrets = await this.getCharacterSecrets(characterId);
 			const salt = crypto.randomUUID();
-
-			// Merge new secrets with existing ones
 			const mergedSecrets = {
-				...existingSecrets.modelKeys,  // Spread existing secrets
-				...secrets  // Spread new secrets on top
+				...existingSecrets.modelKeys,
+				...secrets
 			};
-
-			// Encrypt merged secrets
+			
 			const encryptedSecrets = await this.encryptSecrets(mergedSecrets, salt);
-
+	
 			await this.sql.exec(`
 				INSERT INTO character_secrets (
 					character_id,
@@ -2487,13 +2505,13 @@ export class CharacterRegistryDO {
 					salt = EXCLUDED.salt,
 					model_keys = EXCLUDED.model_keys
 			`, characterId, salt, encryptedSecrets);
-
+	
 			return true;
 		} catch (error) {
 			console.error("Error updating character secrets:", error);
 			throw error;
 		}
-	}
+	}	
 
 	async handleCreateMemory(request) {
 		try {
@@ -2641,9 +2659,10 @@ export class CharacterRegistryDO {
 				error: error.message
 			}), {
 				status: error.message.includes('not found') ? 404 : 500,
-				headers: { 
+				headers: {
 					...CORS_HEADERS,
-					'Content-Type': 'application/json' }
+					'Content-Type': 'application/json'
+				}
 			});
 		}
 	}
@@ -2931,20 +2950,20 @@ export class CharacterRegistryDO {
 
 					try {
 
-						if(!apiKey) {
+						if (!apiKey) {
 							const response = await this.handleMessage(sessionId, message, nonce);
 							return new Response(JSON.stringify(response), {
 								headers: { 'Content-Type': 'application/json' }
-							});	
+							});
 
-						} else{
+						} else {
 							const [authType, authToken] = apiKey.split(' ');
 
 							console.log("trying to handle message with auth:", { hasAuth: authToken });
 							const response = await this.handleMessage(sessionId, message, nonce, authToken);
 							return new Response(JSON.stringify(response), {
 								headers: { 'Content-Type': 'application/json' }
-							});	
+							});
 						}
 					} catch (error) {
 						return new Response(JSON.stringify({
@@ -2970,20 +2989,20 @@ export class CharacterRegistryDO {
 
 					try {
 
-						if(!apiKey) {
+						if (!apiKey) {
 							const response = await this.handleMessage(sessionId, message, nonce);
 							return new Response(JSON.stringify(response), {
 								headers: { 'Content-Type': 'application/json' }
-							});	
+							});
 
-						} else{
+						} else {
 							const [authType, authToken] = apiKey.split(' ');
 
 							console.log("trying to handle message with auth:", { hasAuth: authToken });
 							const response = await this.handleMessage(sessionId, message, nonce, authToken);
 							return new Response(JSON.stringify(response), {
 								headers: { 'Content-Type': 'application/json' }
-							});	
+							});
 						}
 					} catch (error) {
 						return new Response(JSON.stringify({
@@ -3113,9 +3132,6 @@ export class CharacterRegistryDO {
 
 						// Use existing secrets infrastructure 
 						const secrets = await this.getCharacterSecrets(characterId);
-						console.log("secrets are", secrets);
-						const salts = [(env.USER_KEY_SALT + "a"), CHARACTER_SALT];
-						console.log("salts are", salts);
 						// Extract just Discord-specific credentials
 						const discordCreds = {
 							appId: secrets.modelKeys.discord_app_id,
@@ -3179,18 +3195,18 @@ export class CharacterRegistryDO {
 				}
 				case '/twitter-post': {
 					try {
-					return await this.handleInternalTwitterPost(request);
-				} catch (error) {
-					console.error('Twitter notifications handler error:', error);
-					return new Response(JSON.stringify({
-						error: `Failed to post: ${error.message}`,
-						details: error.message
-					}), {
-						status: 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
+						return await this.handleInternalTwitterPost(request);
+					} catch (error) {
+						console.error('Twitter notifications handler error:', error);
+						return new Response(JSON.stringify({
+							error: `Failed to post: ${error.message}`,
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
 				}
-			}
 
 				case '/twitter-notifications': {
 					try {
@@ -3340,9 +3356,9 @@ export class CharacterRegistryDO {
 					});
 				}
 				case '/initialize-session': {
-					const { author, name, personality, roomId } = await request.json();
+					const { author, slug, personality, roomId } = await request.json();
 
-					if (!author || !name || !roomId) {
+					if (!author || !slug || !roomId) {
 						return new Response(JSON.stringify({
 							error: 'Missing required fields'
 						}), {
@@ -3352,7 +3368,7 @@ export class CharacterRegistryDO {
 					}
 
 					try {
-						const session = await this.initializeCharacterRoom(author, name, roomId);
+						const session = await this.initializeCharacterRoom(author, slug, roomId);
 						return new Response(JSON.stringify(session), {
 							headers: { 'Content-Type': 'application/json' }
 						});
