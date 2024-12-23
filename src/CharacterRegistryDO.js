@@ -30,13 +30,6 @@ class NonceManager {
 		const nonce = crypto.randomUUID();
 		const expiresAt = new Date(Date.now() + (expiresInSeconds * 1000));
 
-		console.log('Creating/updating nonce:', {
-			sessionId,
-			roomId,
-			nonce,
-			expiresAt: expiresAt.toISOString()
-		});
-
 		try {
 			// Try to update existing nonce first
 			await this.sql.exec(`
@@ -81,12 +74,6 @@ class NonceManager {
         `, sessionId, nonce, maxRequests).toArray();
 
 		if (!results.length) {
-			console.log('Nonce validation failed:', {
-				sessionId,
-				nonce,
-				maxRequests,
-				results
-			});
 			return false;
 		}
 
@@ -142,11 +129,9 @@ export class CharacterRegistryDO {
 
 	async initializeSchema() {
 		try {
-			console.log('Enabling foreign keys...');
 			await this.sql.exec('PRAGMA foreign_keys = ON;');
 
 			// Create characters table with new fields
-			console.log('Creating characters table...');
 			const createCharactersTable = `
 				CREATE TABLE IF NOT EXISTS characters (
 				id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -165,11 +150,10 @@ export class CharacterRegistryDO {
 				UNIQUE(author, name)
 				)
 			`;
-			console.log('SQL for characters table:', createCharactersTable);
+
 			await this.sql.exec(createCharactersTable);
 
 			// Create character_secrets table
-			console.log('Creating character_secrets table...');
 			await this.sql.exec(`
 				CREATE TABLE IF NOT EXISTS character_secrets (
 					id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -182,7 +166,6 @@ export class CharacterRegistryDO {
 			`);
 
 			// Create sessions table
-			console.log('Creating sessions table...');
 			await this.sql.exec(`
 				CREATE TABLE IF NOT EXISTS character_sessions (
 					id TEXT PRIMARY KEY,
@@ -194,7 +177,6 @@ export class CharacterRegistryDO {
 			`);
 
 			// Create nonces table
-			console.log('Creating nonces table...');
 			await this.sql.exec(`
 				CREATE TABLE IF NOT EXISTS session_nonces (
 					session_id TEXT PRIMARY KEY,
@@ -206,7 +188,6 @@ export class CharacterRegistryDO {
 			`);
 
 			// Create indexes
-			console.log('Creating indexes...');
 			await this.sql.exec(`
 				CREATE INDEX IF NOT EXISTS idx_characters_author ON characters(author);
 				CREATE INDEX IF NOT EXISTS idx_characters_name ON characters(name);
@@ -215,7 +196,6 @@ export class CharacterRegistryDO {
 				CREATE INDEX IF NOT EXISTS idx_character_secrets_id ON character_secrets(character_id)
 			`);
 
-			console.log('Schema initialization completed successfully');
 			return true;
 		} catch (error) {
 			console.error("Error initializing schema:", error);
@@ -233,7 +213,6 @@ export class CharacterRegistryDO {
 
 	async migrateMemorySchema() {
 		try {
-			console.log('Starting memory schema migration...');
 			await this.sql.exec('PRAGMA foreign_keys = OFF;');
 
 			// Get existing columns
@@ -305,7 +284,6 @@ export class CharacterRegistryDO {
 			`);
 
 			await this.sql.exec('PRAGMA foreign_keys = ON;');
-			console.log('Memory schema migration completed successfully');
 			return true;
 		} catch (error) {
 			console.error('Error in memory schema migration:', error);
@@ -316,7 +294,6 @@ export class CharacterRegistryDO {
 
 	async migrateStatusField() {
 		try {
-			console.log('Starting status field migration...');
 			await this.sql.exec('PRAGMA foreign_keys = OFF;');
 
 			// Get existing columns
@@ -325,7 +302,6 @@ export class CharacterRegistryDO {
 
 			// Add status column if it doesn't exist
 			if (!columns.includes('status')) {
-				console.log('Adding status column...');
 				await this.sql.exec('ALTER TABLE characters ADD COLUMN status TEXT DEFAULT "private"');
 
 				// Set all existing characters to private
@@ -333,7 +309,6 @@ export class CharacterRegistryDO {
 			}
 
 			await this.sql.exec('PRAGMA foreign_keys = ON;');
-			console.log('Status field migration completed successfully');
 			return true;
 		} catch (error) {
 			console.error('Error in status field migration:', error);
@@ -344,7 +319,6 @@ export class CharacterRegistryDO {
 
 	async migrateImageFields() {
 		try {
-			console.log('Starting image fields migration...');
 			await this.sql.exec('PRAGMA foreign_keys = OFF;');
 
 			// Get existing columns
@@ -353,18 +327,15 @@ export class CharacterRegistryDO {
 
 			// Add profile_img column if it doesn't exist
 			if (!columns.includes('profile_img')) {
-				console.log('Adding profile_img column...');
 				await this.sql.exec('ALTER TABLE characters ADD COLUMN profile_img TEXT');
 			}
 
 			// Add banner_img column if it doesn't exist
 			if (!columns.includes('banner_img')) {
-				console.log('Adding banner_img column...');
 				await this.sql.exec('ALTER TABLE characters ADD COLUMN banner_img TEXT');
 			}
 
 			await this.sql.exec('PRAGMA foreign_keys = ON;');
-			console.log('Image fields migration completed successfully');
 			return true;
 		} catch (error) {
 			console.error('Error in image fields migration:', error);
@@ -392,12 +363,6 @@ export class CharacterRegistryDO {
 				bytes[i] = binaryString.charCodeAt(i);
 			}
 
-			console.log('Converted base64 to ArrayBuffer:', {
-				inputLength: base64.length,
-				outputLength: bytes.length,
-				isUint8Array: bytes instanceof Uint8Array
-			});
-
 			return bytes;
 		} catch (error) {
 			console.error('Error converting base64 to ArrayBuffer:', error);
@@ -423,7 +388,6 @@ export class CharacterRegistryDO {
 			// Convert modelKeys to string
 			const secretsString = JSON.stringify(modelKeys);
 			const encoder = new TextEncoder();
-			console.log('Secrets string:', secretsString);
 			// Create a key from the character_salt environment variable
 			const key = await crypto.subtle.importKey(
 				'raw',
@@ -435,19 +399,10 @@ export class CharacterRegistryDO {
 
 			// Combine salt and secrets for encryption
 			const dataToEncrypt = encoder.encode(salt + secretsString);
-			// console.log('Data being encrypted:', {
-			// 	combinedLength: dataToEncrypt.length,
-			// 	isUint8Array: dataToEncrypt instanceof Uint8Array
-			// });
 
 			// Generate HMAC
 			const signature = await crypto.subtle.sign('HMAC', key, dataToEncrypt);
 			const base64Signature = await this.arrayBufferToBase64(signature);
-
-			// console.log('Generated signature:', {
-			// 	signatureType: signature.constructor.name,
-			// 	base64Length: base64Signature.length
-			// });
 
 			const finalObject = {
 				salt,
@@ -475,14 +430,11 @@ export class CharacterRegistryDO {
 
 	async decryptSecrets(encryptedData, salt) {
 		try {
-			// console.log('Starting decryption with:', { encryptedData, salt });
 
 			const parsedData = JSON.parse(encryptedData);
-			// console.log('Parsed encrypted data:', parsedData);
 
 			// Check if we have invalid/missing signature data
 			if (!parsedData.signature || typeof parsedData.signature !== 'string') {
-				// console.log('No valid signature found, returning default secrets');
 				// Return default secrets
 				return {
 					openai: this.env.OPENAI_API_KEY,
@@ -502,13 +454,6 @@ export class CharacterRegistryDO {
 
 			// Create the verification data
 			const dataToVerify = encoder.encode(salt + data);
-			// console.log('Data to verify:', {
-			// 	salt,
-			// 	data,
-			// 	verifyArrayBuffer: dataToVerify instanceof Uint8Array,
-			// 	verifyLength: dataToVerify.length
-			// });
-
 			// Create key from environment variable
 			const key = await crypto.subtle.importKey(
 				'raw',
@@ -523,13 +468,6 @@ export class CharacterRegistryDO {
 			if (!(signatureBuffer instanceof Uint8Array)) {
 				throw new Error('Failed to convert signature to Uint8Array');
 			}
-
-			// console.log('Signature conversion:', {
-			// 	originalSignature: signature,
-			// 	isArrayBuffer: signatureBuffer instanceof Uint8Array,
-			// 	signatureLength: signatureBuffer.length,
-			// 	signatureBytes: signatureBuffer.slice(0, 4) // Log first few bytes for debugging
-			// });
 
 			// Verify the HMAC
 			const isValid = await crypto.subtle.verify(
@@ -566,7 +504,6 @@ export class CharacterRegistryDO {
 
 	async initializeCharacterRoom(author, slug, roomId) {
 		try {
-			console.log('Initializing session for:', author, slug, 'in room:', roomId);
 			const character = await this.getCharacter(author, slug);
 
 			if (!character) {
@@ -575,7 +512,6 @@ export class CharacterRegistryDO {
 
 			// Create session ID first
 			const sessionId = crypto.randomUUID();
-			console.log('Creating session with ID:', sessionId);
 
 			// Create session record
 			await this.sql.exec(`
@@ -594,7 +530,6 @@ export class CharacterRegistryDO {
 			`, roomId).toArray();
 
 			if (!roomExists.length) {
-				console.log('Creating new room:', roomId);
 				await this.sql.exec(`
 					INSERT INTO rooms (
 						id,
@@ -749,31 +684,25 @@ export class CharacterRegistryDO {
 
 	async addRoomSupport() {
 		try {
-			console.log('Starting simplified room support migration...');
 			await this.sql.exec('PRAGMA foreign_keys = OFF;');
 
 			// Get existing tables
 			const tables = await this.sql.exec(`SELECT name FROM sqlite_master WHERE type='table'`).toArray();
-			console.log('Existing tables:', tables.map(t => t.name));
 
 			// Check if rooms table exists and its columns
 			const roomsExists = tables.find(t => t.name === 'rooms');
 			if (roomsExists) {
 				const roomsColumns = await this.sql.exec('PRAGMA table_info(rooms)').toArray();
-				console.log('Current rooms columns:', roomsColumns.map(c => c.name));
 
 				// Add missing columns to rooms table
 				if (!roomsColumns.find(c => c.name === 'character_id')) {
-					console.log('Adding character_id to rooms table...');
 					await this.sql.exec(`ALTER TABLE rooms ADD COLUMN character_id INTEGER`);
 				}
 				if (!roomsColumns.find(c => c.name === 'current_session_id')) {
-					console.log('Adding current_session_id to rooms table...');
 					await this.sql.exec(`ALTER TABLE rooms ADD COLUMN current_session_id TEXT`);
 				}
 			} else {
 				// Create rooms table if it doesn't exist
-				console.log('Creating rooms table...');
 				await this.sql.exec(`
 					CREATE TABLE IF NOT EXISTS rooms (
 						id TEXT PRIMARY KEY,
@@ -790,7 +719,6 @@ export class CharacterRegistryDO {
 			if (tables.find(t => t.name === 'character_sessions')) {
 				const sessionsColumns = await this.sql.exec('PRAGMA table_info(character_sessions)').toArray();
 				if (!sessionsColumns.find(c => c.name === 'room_id')) {
-					console.log('Adding room_id to character_sessions table...');
 					await this.sql.exec(`ALTER TABLE character_sessions ADD COLUMN room_id TEXT REFERENCES rooms(id)`);
 				}
 			}
@@ -799,13 +727,11 @@ export class CharacterRegistryDO {
 			if (tables.find(t => t.name === 'session_nonces')) {
 				const noncesColumns = await this.sql.exec('PRAGMA table_info(session_nonces)').toArray();
 				if (!noncesColumns.find(c => c.name === 'room_id')) {
-					console.log('Adding room_id to session_nonces table...');
 					await this.sql.exec(`ALTER TABLE session_nonces ADD COLUMN room_id TEXT REFERENCES rooms(id)`);
 				}
 			}
 
 			// Create or update indexes
-			console.log('Creating/updating indexes...');
 			await this.sql.exec(`
 				CREATE INDEX IF NOT EXISTS idx_rooms_character ON rooms(character_id);
 				CREATE INDEX IF NOT EXISTS idx_sessions_room ON character_sessions(room_id);
@@ -815,7 +741,7 @@ export class CharacterRegistryDO {
 			// Update existing rooms with character_id if needed
 			const defaultChar = await this.sql.exec(`SELECT id FROM characters LIMIT 1`).toArray();
 			if (defaultChar.length > 0) {
-				console.log('Updating existing rooms with default character_id...');
+				('Updating existing rooms with default character_id...');
 				await this.sql.exec(`
 					UPDATE rooms 
 					SET character_id = ? 
@@ -824,11 +750,11 @@ export class CharacterRegistryDO {
 			}
 
 			await this.sql.exec('PRAGMA foreign_keys = ON;');
-			console.log('Room support migration completed successfully');
+			('Room support migration completed successfully');
 
 			// Verify final schema
 			const finalRooms = await this.sql.exec('PRAGMA table_info(rooms)').toArray();
-			console.log('Final rooms schema:', finalRooms);
+			('Final rooms schema:', finalRooms);
 
 			return true;
 		} catch (error) {
@@ -843,21 +769,21 @@ export class CharacterRegistryDO {
 		try {
 			// First ensure base schema exists
 			// await this.initializeSchema();
-			// console.log('Base schema initialized');
+			// ('Base schema initialized');
 
 			// // Then add room support
 			// await this.addRoomSupport();
-			// console.log('Room support added');
+			// ('Room support added');
 
 			// // Add image fields
 			// await this.migrateImageFields();
-			// console.log('Image fields added');
+			// ('Image fields added');
 
 			// await this.migrateStatusField();
-			// console.log('Status field added');
+			// ('Status field added');
 
 			await this.migrateMemorySchema();
-			console.log('Memory schema migrated');
+			('Memory schema migrated');
 
 			return new Response(JSON.stringify({
 				success: true,
@@ -988,7 +914,7 @@ export class CharacterRegistryDO {
 				}
 
 				const characterId = result[0].id;
-				console.log('Created/updated character with ID:', characterId);
+				('Created/updated character with ID:', characterId);
 
 				// Store secrets separately if provided
 				if (secrets?.openai || secrets?.anthropic) {
@@ -1179,6 +1105,10 @@ export class CharacterRegistryDO {
 
 	async getCharacter(author, slug) {  // Changed parameter name from 'name' to 'slug'
 		try {
+			('Getting character:', author, slug);
+			if (typeof slug === 'string') {
+				slug = slug.toLowerCase();
+			}
 			const characterCheck = await this.sql.exec(`
 			SELECT id FROM characters 
 			WHERE author = ? AND slug = ?   /* Changed from name to slug */
@@ -1346,7 +1276,6 @@ export class CharacterRegistryDO {
 	// Add method to handle secrets
 	async getCharacterSecrets(characterId) {
 		try {
-			console.log('Getting secrets for character ID:', characterId);
 
 			if (!characterId) {
 				throw new Error('Character ID is required');
@@ -1362,7 +1291,6 @@ export class CharacterRegistryDO {
 			}
 
 			const character = chars[0];
-			console.log('Found character:', character.name, character.slug);
 
 			// Get existing secrets
 			const secrets = await this.sql.exec(`
@@ -1371,7 +1299,6 @@ export class CharacterRegistryDO {
 			`, characterId).toArray();
 
 			if (!secrets.length) {
-				console.log('No secrets found, creating new ones');
 				// Initialize with all possible secret fields
 				const salt = crypto.randomUUID();
 				const modelKeys = {
@@ -1434,7 +1361,6 @@ export class CharacterRegistryDO {
 			}
 
 			// Create new room if it doesn't exist
-			console.log('Creating new room:', roomId);
 			await this.sql.exec(`
 			INSERT INTO rooms (
 			  id,
@@ -1461,7 +1387,6 @@ export class CharacterRegistryDO {
 
 	// async initializeCharacterRoom(author, name, roomId) {
 	// 	try {
-	// 		console.log('Initializing session for:', author, name, 'in room:', roomId);
 	// 		const character = await this.getCharacter(author, name);
 	// 		console.log('Character data:', character);
 	// 		if (!character) {
@@ -1682,7 +1607,6 @@ export class CharacterRegistryDO {
 			};
 
 			const { AgentRuntime, embed, generateMessageResponse, models } = await import('./eliza-core/index.js');
-			console.log("id and id", this.env.CF_ACCOUNT_ID, this.env.CF_GATEWAY_ID);
 			const self = this; // Store reference to the class instance
 
 			const messageAction = {
@@ -1691,7 +1615,6 @@ export class CharacterRegistryDO {
 				description: "Send a normal chat message response",
 				validate: async (runtime, message, state) => true,
 				handler: async (runtime, message, state, options = {}, callback) => {
-					console.log("Executing message action handler");
 					try {
 						const modelProvider = runtime.modelProvider.toLowerCase();
 						runtime.modelProvider = modelProvider;
@@ -1831,7 +1754,6 @@ export class CharacterRegistryDO {
 			const model = 'gpt-4o-mini';
 			const modelProvider = 'openai';
 			const token = modelProvider === 'ANTHROPIC' ? secrets.modelKeys.anthropic : secrets.modelKeys.openai;
-			console.log("character in init is", character);
 			const config = {
 				agentId: character.id || crypto.randomUUID(),
 				serverUrl: 'http://localhost:7998',
@@ -1862,12 +1784,6 @@ export class CharacterRegistryDO {
 			};
 
 			// Create the runtime with the base configuration
-			console.log("Creating runtime with config:", {
-				model: config.model,
-				modelProvider: config.modelProvider,
-				hasSettings: !!config.settings,
-				settings: config.settings
-			});
 
 			const runtime = new AgentRuntime({
 				...config,
@@ -1886,14 +1802,6 @@ export class CharacterRegistryDO {
 				}
 			});
 
-			console.log("Post-update runtime state:", {
-				hasModels: !!runtime.models,
-				modelsKeys: Object.keys(runtime.models || {}),
-				characterModelProvider: runtime.character.modelProvider,
-				modelProvider: runtime.modelProvider
-			});
-
-			// Instead of proxying the entire runtime, just override the specific methods we need
 			// runtime.trimTokens = (text, maxTokens) => {
 			// 	// Simple and safe character-based trimming
 			// 	const approxCharsPerToken = 4;
@@ -1988,7 +1896,6 @@ export class CharacterRegistryDO {
 	}
 	async handleWorldMessage(sessionId, message, nonce = null, apiKey = null) { // Add apiKey parameter
 		try {
-			console.log("Starting message handling with:", { sessionId, nonce });
 
 			// If we have an API key, verify it and get user info
 			let userInfo = null;
@@ -2003,8 +1910,6 @@ export class CharacterRegistryDO {
 				}));
 
 				const verifyResult = await verifyResponse.json();
-
-				console.log("verified reponse is", verifyResult);
 
 				if (verifyResult.valid) {
 					const username = verifyResult.username;
@@ -2091,7 +1996,6 @@ export class CharacterRegistryDO {
 					reject(error);
 				}
 			});
-			console.log("response is", aiResponse);
 			const responseText = aiResponse?.[0]?.content?.text || 'No response generated';
 
 			// Store AI response
@@ -2132,8 +2036,6 @@ export class CharacterRegistryDO {
 
 	async handleMessage(sessionId, message, nonce = null, apiKey = null) {
 		try {
-			console.log("Starting message handling with:", { sessionId, nonce });
-
 			let activeSession = await this.initializeSession(sessionId);
 			if (!activeSession?.roomId) {
 				throw new Error('Session initialization failed - no roomId');
@@ -2169,12 +2071,6 @@ export class CharacterRegistryDO {
 					content: message
 				}
 			];
-
-			console.log("Attempting OpenAI API call with:", {
-				accountId: this.env.CF_ACCOUNT_ID,
-				gatewayId: this.env.CF_GATEWAY_ID,
-				messageCount: messages.length
-			});
 
 			// Make API call with explicit timeout
 			const controller = new AbortController();
@@ -2213,10 +2109,6 @@ export class CharacterRegistryDO {
 				}
 
 				const result = await response.json();
-				console.log("API response received:", {
-					hasChoices: !!result.choices,
-					choiceCount: result.choices?.length
-				});
 
 				const responseText = result.choices[0].message.content;
 
@@ -2328,7 +2220,7 @@ export class CharacterRegistryDO {
 				  settings = ?,
 				  status = ?,
 				  updated_at = CURRENT_TIMESTAMP
-				WHERE author = ? AND slug = ?  // Changed from name to slug
+				WHERE author = ? AND slug = ?
 				RETURNING *
 			  `,
 				character.modelProvider || 'LLAMALOCAL',
@@ -2477,13 +2369,13 @@ export class CharacterRegistryDO {
 			// First get the character ID
 			const characters = await this.sql.exec(`
 				SELECT id FROM characters 
-				WHERE author = ? AND slug = ?  // Changed from name to slug
+				WHERE author = ? AND slug = ?
 			`, author, slug).toArray();
-	
+
 			if (!characters.length) {
 				throw new Error('Character not found');
 			}
-	
+
 			// Rest of the function remains the same...
 			const characterId = characters[0].id;
 			const existingSecrets = await this.getCharacterSecrets(characterId);
@@ -2492,9 +2384,9 @@ export class CharacterRegistryDO {
 				...existingSecrets.modelKeys,
 				...secrets
 			};
-			
+
 			const encryptedSecrets = await this.encryptSecrets(mergedSecrets, salt);
-	
+
 			await this.sql.exec(`
 				INSERT INTO character_secrets (
 					character_id,
@@ -2505,13 +2397,13 @@ export class CharacterRegistryDO {
 					salt = EXCLUDED.salt,
 					model_keys = EXCLUDED.model_keys
 			`, characterId, salt, encryptedSecrets);
-	
+
 			return true;
 		} catch (error) {
 			console.error("Error updating character secrets:", error);
 			throw error;
 		}
-	}	
+	}
 
 	async handleCreateMemory(request) {
 		try {
@@ -2605,42 +2497,34 @@ export class CharacterRegistryDO {
 
 	async handleInternalTwitterPost(request) {
 		try {
-			const { userId, characterName, tweet, sessionId, roomId, nonce, character } = await request.json();
-			console.log("handle post", userId, characterName, sessionId, roomId, nonce, character, tweet);
-			// Get character and verify it exists
-			// const character = await this.getCharacter(userId, characterName);
+			const { userId, characterName, tweet, sessionId, roomId, nonce } = await request.json();
+			const character = await this.getCharacter(userId, characterName);
 			if (!character) {
 				throw new Error('Character not found');
 			}
-			const updatedCharacter = character;
-			// Get the existing session
-			const session = await this.initializeSession(sessionId, updatedCharacter);
-			if (!session?.runtime) {
-				throw new Error('Session not initialized');
-			}
 
-			// Get secrets and set credentials
+			// Get secrets for auth
 			const secrets = await this.getCharacterSecrets(character.id);
-			session.runtime.settings = {
-				...session.runtime.settings,
-				TWITTER_USERNAME: secrets.modelKeys.twitter_username,
-				TWITTER_PASSWORD: secrets.modelKeys.twitter_password,
-				TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-				TWITTER_COOKIES: secrets.modelKeys.twitter_cookies,
-				TWITTER_DRY_RUN: 'false'
+
+			// Import the TwitterClientInterface instead of Scraper directly
+			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+
+			// Create runtime settings object from secrets
+			const runtime = {
+				settings: {
+					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
+					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
+					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies)
+				}
 			};
 
-			console.log("session twitter post", JSON.stringify(session.runtime.settings));
+			// Initialize the Twitter client using the interface
+			const client = await TwitterClientInterface.start(runtime);
 
-			// Initialize Twitter client 
-			const { TwitterClientInterface } = await import('./twitter-client/index.js');
-			const twitterClient = await TwitterClientInterface.start(session.runtime);
-			console.log("twitter client", twitterClient);
-			console.log("tweet is", tweet);
-			// Send tweet
-			const result = await twitterClient.sendTweet(tweet);
+			// Send the tweet
+			const result = await client.sendTweet(tweet);
 
-			// Generate new nonce for next request
 			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
 
 			return new Response(JSON.stringify({
@@ -2653,10 +2537,12 @@ export class CharacterRegistryDO {
 					'Content-Type': 'application/json'
 				}
 			});
+
 		} catch (error) {
 			console.error('Internal Twitter post error:', error);
 			return new Response(JSON.stringify({
-				error: error.message
+				error: error.message,
+				details: error.stack
 			}), {
 				status: error.message.includes('not found') ? 404 : 500,
 				headers: {
@@ -2667,7 +2553,64 @@ export class CharacterRegistryDO {
 		}
 	}
 
+	async handleTwitterReply(request) {
+		try {
+			const { userId, characterName, tweetId, replyText, sessionId, roomId, nonce } = await request.json();
+			const slug = characterName;
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
 
+			// Get secrets for auth
+			const secrets = await this.getCharacterSecrets(character.id);
+
+			// Import the TwitterClientInterface
+			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+
+			// Create runtime settings object from secrets
+			const runtime = {
+				settings: {
+					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
+					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
+					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies)
+				}
+			};
+
+			// Initialize the Twitter client using the interface
+			const client = await TwitterClientInterface.start(runtime);
+
+			// Send the reply using the existing sendTweet method with replyToId
+			const result = await client.sendTweet(replyText, tweetId);
+
+			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
+
+			return new Response(JSON.stringify({
+				success: true,
+				tweet: result,
+				nonce: newNonce.nonce
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+
+		} catch (error) {
+			console.error('Twitter reply handler error:', error);
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
+	}
 
 	async handleTwitterNotifications(request) {
 		try {
@@ -2679,55 +2622,61 @@ export class CharacterRegistryDO {
 				throw new Error('Character not found');
 			}
 
-			// Get the existing session
-			const session = await this.initializeSession(sessionId, updatedCharacter);
-			if (!session?.runtime) {
-				throw new Error('Session not initialized');
+			// Get secrets and Twitter credentials
+			const secrets = await this.getCharacterSecrets(character.id);
+			if (!secrets?.modelKeys?.twitter_cookies) {
+				throw new Error('Twitter credentials not found');
 			}
 
-			// Get secrets and set credentials
-			const secrets = await this.getCharacterSecrets(character.id);
-			session.runtime.settings = {
-				...session.runtime.settings,
-				TWITTER_USERNAME: secrets.modelKeys.twitter_username,
-				TWITTER_PASSWORD: secrets.modelKeys.twitter_password,
-				TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-				TWITTER_COOKIES: secrets.modelKeys.twitter_cookies,
-				TWITTER_DRY_RUN: 'true'
-			};
-
-			// Initialize Twitter client 
-			const { TwitterClientInterface } = await import('./twitter-client/index.js');
-			const twitterClient = await TwitterClientInterface.start(session.runtime);
-
-			// Fetch notifications directly using new client
-			const notifications = await twitterClient.getNotifications(20);
-
-			// Generate new nonce
-			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
-
-			return new Response(JSON.stringify({
-				notifications,
-				nonce: newNonce.nonce
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
+			// Create Twitter client instance
+			const { TwitterClient } = await import('./twitter-client/index.js');
+			const client = new TwitterClient({
+				settings: {
+					TWITTER_COOKIES: secrets.modelKeys.twitter_cookies,
+					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
+					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD
 				}
 			});
-		} catch (error) {
-			console.error('Twitter notifications error:', error);
+
+			// Initialize client
+			await client.initialize();
+
+			// Fetch notifications
+			const notifications = await client.getNotifications(20); // Get last 20 notifications
+			// Create new nonce for session continuity
+			const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
+
+			// Return notifications and new nonce
 			return new Response(JSON.stringify({
-				error: error.message
+				notifications,
+				nonce: newNonce
+			}), {
+				headers: {
+					'Content-Type': 'application/json',
+					...CORS_HEADERS
+				}
+			});
+
+		} catch (error) {
+			console.error('Twitter notifications error:', {
+				message: error.message,
+				stack: error.stack,
+				type: error.constructor.name
+			});
+
+			return new Response(JSON.stringify({
+				error: 'Failed to fetch notifications',
+				details: error.message
 			}), {
 				status: error.message.includes('not found') ? 404 : 500,
-				headers: { ...CORS_HEADERS }
+				headers: {
+					'Content-Type': 'application/json',
+					...CORS_HEADERS
+				}
 			});
 		}
 	}
-
-
-
 
 	async handleTwitterRetweet(request) {
 		try {
@@ -2741,7 +2690,7 @@ export class CharacterRegistryDO {
 
 			// Get secrets and initialize client
 			const secrets = await this.getCharacterSecrets(character.id);
-			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+			const { TwitterClientInterface } = await import('./client-twitter/index.js');
 			const twitterClient = await TwitterClientInterface.start({
 				settings: {
 					TWITTER_USERNAME: secrets.modelKeys.twitter_username,
@@ -2769,88 +2718,51 @@ export class CharacterRegistryDO {
 		}
 	}
 
-
-	async handleTwitterReply(request) {
-		try {
-			const { userId, characterName, tweetId, replyText } = await request.json();
-
-			// Get character
-			const character = await this.getCharacter(userId, characterName);
-			if (!character) {
-				throw new Error('Character not found');
-			}
-
-			// Get secrets and initialize client
-			const secrets = await this.getCharacterSecrets(character.id);
-			const { TwitterClientInterface } = await import('./twitter-client/index.js');
-			const twitterClient = await TwitterClientInterface.start({
-				settings: {
-					TWITTER_USERNAME: secrets.modelKeys.twitter_username,
-					TWITTER_PASSWORD: secrets.modelKeys.twitter_password,
-					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-					TWITTER_COOKIES: secrets.modelKeys.twitter_cookies,
-					TWITTER_DRY_RUN: 'true'
-				}
-			});
-
-			const result = await twitterClient.reply(tweetId, replyText);
-
-			return new Response(JSON.stringify(result), {
-				headers: { ...CORS_HEADERS }
-			});
-		} catch (error) {
-			console.error('Twitter reply error:', error);
-			return new Response(JSON.stringify({
-				error: 'Failed to send reply',
-				details: error.message
-			}), {
-				status: 500,
-				headers: { ...CORS_HEADERS }
-			});
-		}
-	}
-
-
 	async handleTwitterLike(request) {
 		try {
-			const { userId, characterName, tweetId } = await request.json();
+			const { characterId, tweetId } = await request.json();
 
-			// Get character
-			const character = await this.getCharacter(userId, characterName);
-			if (!character) {
-				throw new Error('Character not found');
+			// Get character secrets/credentials
+			const secrets = await this.getCharacterSecrets(characterId);
+			if (!secrets?.modelKeys?.twitter_cookies) {
+				throw new Error('Twitter credentials not found');
 			}
 
-			// Get secrets and initialize client
-			const secrets = await this.getCharacterSecrets(character.id);
-			const { TwitterClientInterface } = await import('./twitter-client/index.js');
-			const twitterClient = await TwitterClientInterface.start({
-				settings: {
-					TWITTER_USERNAME: secrets.modelKeys.twitter_username,
-					TWITTER_PASSWORD: secrets.modelKeys.twitter_password,
-					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-					TWITTER_COOKIES: secrets.modelKeys.twitter_cookies,
-					TWITTER_DRY_RUN: 'true'
-				}
+			const cookies = secrets.modelKeys.twitter_cookies;
+			const cookieString = cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+			const csrfToken = cookies.find(c => c.name === 'ct0')?.value;
+
+			// Call Twitter's like endpoint
+			const likeResponse = await fetch('https://api.twitter.com/1.1/favorites/create.json', {
+				method: 'POST',
+				headers: {
+					'authorization': `Bearer ${this.env.TWITTER_BEARER_TOKEN}`,
+					'cookie': cookieString,
+					'content-type': 'application/x-www-form-urlencoded',
+					'x-csrf-token': csrfToken
+				},
+				body: `id=${tweetId}`
 			});
 
-			const result = await twitterClient.likeTweet(tweetId);
+			if (!likeResponse.ok) {
+				throw new Error(`Failed to like tweet: ${await likeResponse.text()}`);
+			}
 
-			return new Response(JSON.stringify(result), {
-				headers: { ...CORS_HEADERS }
+			return new Response(JSON.stringify({ success: true }), {
+				headers: { 'Content-Type': 'application/json' }
 			});
+
 		} catch (error) {
-			console.error('Twitter like error:', error);
+			console.error('Twitter like handler error:', error);
 			return new Response(JSON.stringify({
 				error: 'Failed to like tweet',
 				details: error.message
 			}), {
 				status: 500,
-				headers: { ...CORS_HEADERS }
+				headers: { 'Content-Type': 'application/json' }
 			});
 		}
 	}
-
 
 	// Helper method to get runtime from token
 	async getRuntimeFromToken(token) {
@@ -2938,7 +2850,6 @@ export class CharacterRegistryDO {
 				}
 				case '/send-chat-message': {
 					const { sessionId, message, nonce, apiKey } = await request.json();
-					console.log("Received message: in fetch:", message);
 					if (!sessionId || !message) {
 						return new Response(JSON.stringify({
 							error: 'Missing required fields'
@@ -2959,7 +2870,6 @@ export class CharacterRegistryDO {
 						} else {
 							const [authType, authToken] = apiKey.split(' ');
 
-							console.log("trying to handle message with auth:", { hasAuth: authToken });
 							const response = await this.handleMessage(sessionId, message, nonce, authToken);
 							return new Response(JSON.stringify(response), {
 								headers: { 'Content-Type': 'application/json' }
@@ -2977,7 +2887,6 @@ export class CharacterRegistryDO {
 				}
 				case '/send-message': {
 					const { sessionId, message, nonce, apiKey } = await request.json();
-					console.log("Received message: in fetch:", message);
 					if (!sessionId || !message) {
 						return new Response(JSON.stringify({
 							error: 'Missing required fields'
@@ -2997,8 +2906,6 @@ export class CharacterRegistryDO {
 
 						} else {
 							const [authType, authToken] = apiKey.split(' ');
-
-							console.log("trying to handle message with auth:", { hasAuth: authToken });
 							const response = await this.handleMessage(sessionId, message, nonce, authToken);
 							return new Response(JSON.stringify(response), {
 								headers: { 'Content-Type': 'application/json' }
@@ -3074,7 +2981,7 @@ export class CharacterRegistryDO {
 
 				case '/update-character-secrets': {
 					const { author, character } = await request.json();
-					await this.updateCharacterSecrets(author, character.name, character.settings.secrets);
+					await this.updateCharacterSecrets(author, character.slug, character.settings.secrets);
 					return new Response(JSON.stringify({
 						success: true,
 						message: 'Character secrets updated successfully'
@@ -3169,7 +3076,6 @@ export class CharacterRegistryDO {
 
 						// Use existing secrets infrastructure 
 						const secrets = await this.getCharacterSecrets(characterId);
-						console.log("secrets are", secrets);
 						// Extract just Discord-specific credentials
 						const discordCreds = {
 							TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
@@ -3208,7 +3114,11 @@ export class CharacterRegistryDO {
 					}
 				}
 
-				case '/twitter-notifications': {
+				case '/api/twitter/notifications': {
+					if (request.method !== 'POST') {
+						return new Response('Method not allowed', { status: 405 });
+					}
+
 					try {
 						return await this.handleTwitterNotifications(request);
 					} catch (error) {
@@ -3218,24 +3128,12 @@ export class CharacterRegistryDO {
 							details: error.message
 						}), {
 							status: 500,
-							headers: { 'Content-Type': 'application/json' }
+							headers: { ...CORS_HEADERS }
 						});
 					}
 				}
-
-				case '/twitter-retweet': {
-					try {
-						return await this.handleTwitterRetweet(request);
-					} catch (error) {
-						console.error('Twitter retweet handler error:', error);
-						return new Response(JSON.stringify({
-							error: 'Failed to retweet',
-							details: error.message
-						}), {
-							status: 500,
-							headers: { 'Content-Type': 'application/json' }
-						});
-					}
+				case '/twitter-like': {
+					return await this.handleTwitterLike(request);
 				}
 
 				case '/twitter-reply': {
@@ -3253,13 +3151,13 @@ export class CharacterRegistryDO {
 					}
 				}
 
-				case '/twitter-like': {
+				case '/twitter-retweet': {
 					try {
-						return await this.handleTwitterLike(request);
+						return await this.handleTwitterRetweet(request);
 					} catch (error) {
-						console.error('Twitter like handler error:', error);
+						console.error('Twitter retweet handler error:', error);
 						return new Response(JSON.stringify({
-							error: 'Failed to like tweet',
+							error: 'Failed to retweet',
 							details: error.message
 						}), {
 							status: 500,
@@ -3303,11 +3201,9 @@ export class CharacterRegistryDO {
 				}
 				case '/get-character': {
 					try {
-						const { author, name } = await request.json();
+						const { author, name, slug } = await request.json();
 						// Get character config
-						console.log('Getting character:', author, name);
-
-						const character = await this.getCharacter(author, name);
+						const character = await this.getCharacter(author, slug);
 
 						if (!character) {
 							return new Response(JSON.stringify({ error: 'Character not found' }), {

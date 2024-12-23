@@ -7,22 +7,37 @@ import generateHomeHTML from './homeTemplate';
 import generateRegisterHTML from './registrationTemplate';
 import generateRequestKeyRollHTML from './rollKeyTemplate';
 import generateCharacterHTML from './characterTemplate';
+
 // import generateCharacterDirectoryHTML from './characterDirectoryTemplate';
 
 import { UserAuthDO } from './userAuthDO';
 import { WorldRegistryDO } from './WorldRegistryDO';
 import { CharacterRegistryDO } from './CharacterRegistryDO';
+import { DiscordBotDO } from './discordBotDO';
 
 import { removeAuthor, removeWorld } from './management';
 
-export { UserAuthDO, WorldRegistryDO, CharacterRegistryDO };
+export { UserAuthDO, WorldRegistryDO, CharacterRegistryDO, DiscordBotDO };
 
 // Define CORS
 const CORS_HEADERS = {
 	'Access-Control-Allow-Origin': '*',
 	'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
-	'Access-Control-Allow-Headers': 'Content-Type, Authorization, Accept',
+	'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Discord-Application-Id, cf-discord-token',
 	'Access-Control-Max-Age': '86400',
+};
+
+function corsHeaders() {
+	return {
+		'Access-Control-Allow-Origin': '*',
+		'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+		'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Discord-Application-Id, cf-discord-token',
+	};
+}
+
+const getDiscordBot = (env, preferredId = 'default') => {
+	const id = env.DISCORD_BOTS.idFromName(preferredId);
+	return env.DISCORD_BOTS.get(id);
 };
 
 
@@ -202,8 +217,6 @@ export default {
 						visits: Array.from(visits)
 					})
 				}));
-
-				console.log(`Processed ${visits.size} world visits`);
 			}
 
 		} catch (error) {
@@ -361,9 +374,6 @@ export default {
 			// Bust authors list cache
 			await cache.delete(`https://${request.headers.get('host')}/authors-list`);
 
-			console.log(`Cache busted for author ${userId}`);
-
-
 			return new Response(JSON.stringify({ success: true, message: 'Author info uploaded successfully' }), {
 				status: 200,
 				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' },
@@ -405,7 +415,6 @@ export default {
 				});
 			}
 
-			console.log(`Received ${assetType} for world: ${worldName}`);
 			const sanitizedWorldName = worldName.replace(/\s/g, '-');
 			const folderName = `${userId}`;
 			const assetKey = `${folderName}/${sanitizedWorldName}/${fileName}`;
@@ -416,8 +425,6 @@ export default {
 					contentType: 'image/jpeg', // Consider making this dynamic based on file type
 				},
 			});
-
-			console.log(`Successfully stored ${assetType}`);
 
 			return new Response(JSON.stringify({
 				success: true,
@@ -442,7 +449,6 @@ export default {
 	// Helper function to fetch author data
 	async fetchAuthorData(author, env) {
 		const authorInfoKey = `${author}/author_info.json`;
-		console.log(`Fetching author data for ${author} ${authorInfoKey}`);
 		try {
 			const authorInfoObject = await env.WORLD_BUCKET.get(authorInfoKey);
 			if (!authorInfoObject) {
@@ -509,7 +515,6 @@ export default {
 				if (!worldData) {
 					return new Response('World not found', { status: 404 });
 				}
-				console.log("worldData", JSON.stringify(worldData));
 				// world_url is antpb/Scene/Scene.html, we need to use the asset directory of http://xrpassets.sxp.digital/antpb/Scene/Scene.html
 				worldData.asset_directory = `http://xrpassets.sxp.digital/${author}/${world}/`;
 				// pull html content and include it as a stringified object in the worldData named `world_html`
@@ -742,9 +747,6 @@ export default {
 				if (sourceObject) {
 					const destinationKey = `${backupFolder}/${file}`;
 					await env.WORLD_BUCKET.put(destinationKey, sourceObject.body, sourceObject.httpMetadata);
-					console.log(`Backed up ${file} to ${destinationKey}`);
-				} else {
-					console.log(`File ${file} not found, skipping backup`);
 				}
 			}
 
@@ -1325,8 +1327,6 @@ export default {
 				properties: metadata.properties || null
 			};
 
-			console.log('Processed metadata:', processedMetadata);
-
 			// Store metadata in R2
 			await env.WORLD_BUCKET.put(metadataKey, JSON.stringify([processedMetadata]), {
 				httpMetadata: {
@@ -1553,7 +1553,6 @@ export default {
 				// Get character data from the registry
 				const id = env.CHARACTER_REGISTRY.idFromName("global");
 				const registry = env.CHARACTER_REGISTRY.get(id);
-				console.log('Got CHARACTER_REGISTRY DO instance', registry);
 				const characterResponse = await registry.fetch(new Request('http://internal/get-character', {
 					method: 'POST',
 					body: JSON.stringify({ author, slug: characterName })
@@ -1732,12 +1731,10 @@ export default {
 	async handleCharacterUpload(request, env) {
 		try {
 			const { userId, character } = await request.json();
-			console.log('Received upload request for character:', { userId, characterName: character.name });
 
 			// Auth check
 			const authHeader = request.headers.get('Authorization');
 			if (!authHeader) {
-				console.log('Missing Authorization header');
 				return new Response(JSON.stringify({
 					error: 'Missing Authorization header'
 				}), {
@@ -1749,7 +1746,6 @@ export default {
 
 			// Verify API key and username match
 			const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
-			console.log('API key verification result:', isValid);
 			if (!isValid) {
 				return new Response(JSON.stringify({
 					error: 'Unauthorized: Invalid API key or username mismatch'
@@ -1762,10 +1758,8 @@ export default {
 			// Get DO instance
 			const id = env.CHARACTER_REGISTRY.idFromName("global");
 			const registry = env.CHARACTER_REGISTRY.get(id);
-			console.log('Got CHARACTER_REGISTRY DO instance');
 
 			// Create/update character
-			console.log('Sending create request to DO');
 			const response = await registry.fetch(new Request('http://internal/create-character', {
 				method: 'POST',
 				body: JSON.stringify({
@@ -1774,9 +1768,7 @@ export default {
 				})
 			}));
 
-			console.log('DO response status:', response.status);
 			const responseText = await response.text();
-			console.log('DO response text:', responseText);
 
 			if (!response.ok) {
 				throw new Error(`Failed to create character: ${responseText}`);
@@ -1785,7 +1777,6 @@ export default {
 			// Clear cache for this character
 			const cache = caches.default;
 			const cacheKey = `https://${request.headers.get('host')}/characters/${userId}/${character.slug}`;
-			console.log('Clearing cache for:', cacheKey);
 			await cache.delete(cacheKey);
 
 			return new Response(JSON.stringify({
@@ -1995,7 +1986,7 @@ export default {
 
 			const getCharRequest = new Request('http://internal/get-character', {
 				method: 'POST',
-				body: JSON.stringify({ author: userId, name: characterName })
+				body: JSON.stringify({ author: userId, slug: characterName })
 			});
 
 			const charResponse = await registry.fetch(getCharRequest);
@@ -2092,7 +2083,7 @@ export default {
 				body: JSON.stringify({
 					author: userId,
 					character: {
-						name: characterName,
+						slug: characterName,
 						settings: {
 							secrets: {
 								[keyType]: value
@@ -2324,7 +2315,6 @@ export default {
 		}
 
 		const result = await response.json();
-		console.log('Character generation result:', result.choices[0]);
 
 		// Handle potential refusal
 		if (result.choices[0].message.refusal) {
@@ -2395,10 +2385,34 @@ export default {
 			return await this.handleCreateUser(request, env);
 		}
 
+		if (path === '/interactions') {
+			const signature = request.headers.get('x-signature-ed25519');
+			const timestamp = request.headers.get('x-signature-timestamp');
+			const bodyText = await request.text();
+			const body = JSON.parse(bodyText);
+			const applicationId = body.application_id;
+			
+			// Get DO instance with specific app ID
+			const bot = getDiscordBot(env, applicationId);
+		
+			// Create new request with the same body
+			const newRequest = new Request('http://internal/interactions', {
+				method: 'POST',
+				headers: {
+					'Content-Type': 'application/json',
+					'x-signature-ed25519': signature,
+					'x-signature-timestamp': timestamp
+				},
+				body: bodyText
+			});
+			
+			return bot.fetch(newRequest);
+		}
+		
+								
 		if (path === '/request-key-roll' && request.method === "POST") {
 
 			const { username, email } = await request.json();
-			console.log(`Requesting API key roll for ${username} (${email})`);
 
 			const id = env.USER_AUTH.idFromName("global");
 			const auth = env.USER_AUTH.get(id);
@@ -2419,7 +2433,6 @@ export default {
 		if (request.method === 'OPTIONS') {
 			return this.handleOptions(request);
 		}
-		console.log("Before auth check:", path, request.method);
 
 		// Authenticate non-GET requests (except certain public endpoints)
 		if (request.method !== 'GET' && ![
@@ -2430,6 +2443,12 @@ export default {
 			'/api/character/message',
 			'/api/character/session',
 			'/featured-characters',
+			'/discord/init',
+			'/discord/check',
+			'/discord/interactions',
+			'/interactions',
+			'/init',
+			'/check'
 		].includes(path)) {
 			if (!await this.authenticateRequest(request, env)) {
 				return new Response(JSON.stringify({ error: 'Unauthorized' }), {
@@ -2438,9 +2457,6 @@ export default {
 				});
 			}
 		}
-		console.log("Auth passed for:", path);
-
-		console.log("the current attempted path", path, request.method);
 
 		// Main request routing
 		switch (request.method) {
@@ -2535,6 +2551,18 @@ export default {
 					case '/author-characters': {
 						return this.handleGetAuthorCharacters(request, env);
 					}
+					case '/websocket/': {
+						const channelId = path.split('/')[2];
+						const upgradeHeader = request.headers.get('Upgrade');
+
+						if (!upgradeHeader || upgradeHeader !== 'websocket') {
+							return new Response('Expected Upgrade: websocket', { status: 426 });
+						}
+
+						const bot = getDiscordBot(env);
+
+						return bot.fetch(request);
+					}
 					default: {
 						// Handle directory and author paths that need path parameter extraction
 						if (path.startsWith('/directory/') && path.split('/').length === 4) {
@@ -2553,8 +2581,51 @@ export default {
 			}
 
 			case 'POST': {
-				console.log('POST request:', path);
 				switch (path) {
+					case '/init': {
+						try {
+							const clonedRequest = request.clone();
+							const bodyData = await clonedRequest.text();
+							let applicationId = 'default';
+					
+							try {
+								const jsonData = JSON.parse(bodyData);
+								applicationId = jsonData.applicationId || 'default';
+							} catch (e) {
+								console.error('Failed to parse JSON from init request:', e);
+							}
+					
+							// Remove this line since it's redundant with getDiscordBot
+							// const id = env.DISCORD_BOTS.idFromName(applicationId);
+							const bot = getDiscordBot(env, applicationId);
+					
+							// Create new request with the stored body data
+							return bot.fetch(new Request('http://internal/init', {
+								method: 'POST',
+								headers: request.headers,
+								body: bodyData
+							}));
+						} catch (error) {
+							console.error('Init handler error:', error);
+							return new Response(JSON.stringify({
+								error: 'Failed to process init request',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+							});
+						}
+					}
+
+					case '/check': {
+						// Get applicationId from body
+						const body = await request.json();
+						const applicationId = body.applicationId || 'default';
+						const bot = getDiscordBot(env, applicationId);
+						return bot.fetch(new Request('http://internal/check', {
+							method: 'POST'
+						}));
+					}
 					case '/migrate-data': {
 						try {
 							const migrateRequest = new Request('http://internal/migrate-data', {
@@ -2695,7 +2766,6 @@ export default {
 						}
 						try {
 							const { userId, characterName, tweet, sessionId, roomId, nonce } = await request.json();
-							console.log('Twitter post:', userId, characterName, tweet, sessionId, roomId, nonce);
 							const authHeader = request.headers.get('Authorization');
 							if (!authHeader) {
 								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
@@ -2718,19 +2788,17 @@ export default {
 
 							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
 								method: 'POST',
-								body: JSON.stringify({ author: userId, name: characterName })
+								body: JSON.stringify({ author: userId, slug: characterName })
 							}));
 
 							if (!charResponse.ok) {
-								return new Response(JSON.stringify({ error: 'Character not found' }), {
+								return new Response(JSON.stringify({ error: 'Character very not found' }), {
 									status: 404,
 									headers: { ...CORS_HEADERS }
 								});
 							}
 
 							const character = await charResponse.json();
-
-							console.log("Character found:", character);
 
 							return await registry.fetch(new Request('http://internal/twitter-post', {
 								method: 'POST',
@@ -2776,7 +2844,7 @@ export default {
 
 							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
 								method: 'POST',
-								body: JSON.stringify({ author: userId, name: characterName })
+								body: JSON.stringify({ author: userId, slug: characterName })
 							}));
 
 							if (!charResponse.ok) {
@@ -2788,9 +2856,9 @@ export default {
 
 							const character = await charResponse.json();
 
-							return await registry.fetch(new Request('http://internal/twitter-notifications', {
+							return await registry.fetch(new Request('http://internal/api/twitter/notifications', {
 								method: 'POST',
-								body: JSON.stringify({ userId, characterName, sessionId, roomId, nonce, updatedCharacter })
+								body: JSON.stringify({ userId, characterName, sessionId, roomId, nonce, character })
 							}));
 						} catch (error) {
 							console.error('Twitter notifications error:', error);
@@ -2833,7 +2901,7 @@ export default {
 
 							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
 								method: 'POST',
-								body: JSON.stringify({ author: userId, name: characterName })
+								body: JSON.stringify({ author: userId, slug: characterName })
 							}));
 
 							if (!charResponse.ok) {
@@ -2894,7 +2962,7 @@ export default {
 
 							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
 								method: 'POST',
-								body: JSON.stringify({ author: userId, name: characterName })
+								body: JSON.stringify({ author: userId, slug: characterName })
 							}));
 
 							if (!charResponse.ok) {
@@ -2906,12 +2974,14 @@ export default {
 
 							const character = await charResponse.json();
 
-							return await registry.fetch(new Request('http/internal/twitter-reply', {
+							return await registry.fetch(new Request('http://internal/twitter-reply', {
 								method: 'POST',
 								body: JSON.stringify({
 									characterId: character.id,
 									tweetId,
-									replyText
+									replyText,
+									characterName,
+									userId
 								})
 							}));
 						} catch (error) {
@@ -2955,7 +3025,7 @@ export default {
 
 							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
 								method: 'POST',
-								body: JSON.stringify({ author: userId, name: characterName })
+								body: JSON.stringify({ author: userId, slug: characterName })
 							}));
 
 							if (!charResponse.ok) {
@@ -3019,7 +3089,7 @@ export default {
 							// First get the character
 							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
 								method: 'POST',
-								body: JSON.stringify({ author: userId, name: characterName })
+								body: JSON.stringify({ author: userId, slug: characterName })
 							}));
 
 							if (!charResponse.ok) {
@@ -3032,7 +3102,6 @@ export default {
 							}
 
 							const character = await charResponse.json();
-							console.log(env.CHARACTER_SALT, env.USER_KEY_SALT)
 							// Now get Discord credentials using character ID
 							const credsResponse = await registry.fetch(new Request('http://internal/get-discord-credentials', {
 								method: 'POST',
@@ -3056,14 +3125,11 @@ export default {
 						}
 					}
 					case '/get-my-twitter-credentials': {
-						console.log("we are in twitter credentials");
 						if (request.method !== 'POST') {
 							return new Response('Method not allowed', { status: 405 });
 						}
 						try {
-							console.log("we are in the try block", `${env.CHARACTER_SALT}=`, `${env.USER_KEY_SALT}=`);
 							const { userId, characterName } = await request.json();
-							console.log("userid and charactername weee", userId, characterName);
 							// Auth check
 							const authHeader = request.headers.get('Authorization');
 							if (!authHeader) {
@@ -3073,7 +3139,6 @@ export default {
 								});
 							}
 							const [, apiKey] = authHeader.split(' ');
-							console.log("the api key is", apiKey, userId, env);
 							// Verify API key and username match
 							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
 							if (!isValid) {
@@ -3086,11 +3151,10 @@ export default {
 							// Get character ID first
 							const id = env.CHARACTER_REGISTRY.idFromName("global");
 							const registry = env.CHARACTER_REGISTRY.get(id);
-							console.log("the character id we got is", id);
 							// First get the character
 							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
 								method: 'POST',
-								body: JSON.stringify({ author: userId, name: characterName })
+								body: JSON.stringify({ author: userId, slug: characterName })
 							}));
 
 							if (!charResponse.ok) {
@@ -3101,14 +3165,12 @@ export default {
 							}
 
 							const character = await charResponse.json();
-							console.log("ayo the character is", character);
 							// Get Twitter credentials using character ID
 							const credsResponse = await registry.fetch(new Request('http://internal/get-twitter-credentials', {
 								method: 'POST',
 								body: JSON.stringify({ characterId: character.id }),
 							}));
 
-							console.log("the creds response is", credsResponse);
 							return new Response(await credsResponse.text(), {
 								status: credsResponse.status,
 								headers: { ...CORS_HEADERS }
@@ -3197,6 +3259,7 @@ export default {
 							});
 						}
 					}
+
 					case '/migrate-authors': {
 						const id = env.WORLD_REGISTRY.idFromName("global");
 						const registry = env.WORLD_REGISTRY.get(id);
@@ -3231,7 +3294,6 @@ export default {
 					case '/api/character/chat-message': {
 						try {
 							const { roomId, sessionId, message, nonce } = await request.json();
-							console.log("main worker attempting to send message");
 							if (!sessionId || !message) {
 								return new Response(JSON.stringify({
 									error: 'Missing required fields'
@@ -3284,7 +3346,6 @@ export default {
 					case '/api/character/message': {
 						try {
 							const { roomId, sessionId, message, nonce } = await request.json();
-							console.log("main worker attempting to send message");
 							if (!sessionId || !message) {
 								return new Response(JSON.stringify({
 									error: 'Missing required fields'
@@ -3408,7 +3469,7 @@ export default {
 						});
 
 						return await auth.fetch(internalRequest);
-					} 
+					}
 					default: {
 						return new Response(JSON.stringify({ error: 'Invalid endpoint' }), {
 							status: 404,

@@ -10,6 +10,7 @@
 		"@sentry/esbuild-plugin": "^2.22.7",
 		"agent-twitter-client": "^0.0.16",
 		"ai": "^4.0.3",
+		"discord-interactions": "^4.1.0",
 		"dotenv": "^16.4.7",
 		"js-sha1": "^0.7.0",
 		"js-tiktoken": "^1.0.15",
@@ -26,6 +27,7 @@
 		"wrangler": "^3.82.0"
 	},
 	"devDependencies": {
+		"@cloudflare/workers-types": "^4.20241218.0",
 		"buffer": "^6.0.3",
 		"crypto-browserify": "^3.12.1",
 		"esbuild": "^0.24.0",

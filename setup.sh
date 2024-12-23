@@ -219,7 +219,7 @@ echo "Creating/Updating wrangler.toml..."
 cat > wrangler.toml << EOL
 name = "$project_name"
 main = "dist/worker.js"
-compatibility_date = "$current_date"
+compatibility_date = "2024-09-23"
 compatibility_flags = ["nodejs_compat"]
 account_id = "$account_id"
 
@@ -264,6 +264,10 @@ new_sqlite_classes = ["UserAuthDO"]
 [[migrations]]
 tag = "v3"
 new_sqlite_classes = ["CharacterRegistryDO"]
+
+[[migrations]]
+tag = "v4"
+new_classes = ["DiscordBotDO"]
 
 [vars]
 ENVIRONMENT = "production"

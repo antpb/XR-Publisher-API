@@ -3,7 +3,6 @@ const mainLogo = 'https://xrpublisher.com/wp-content/uploads/2024/10/xrpublisher
 const logoMarkup = `<a href="/" class="mr-4"><img src="${mainLogo}" alt="Logo" class="max-h-8"></a>`;
 
 export function createSearchBar(currentQuery = '', tags = [], request) {
-	console.log("REQ", request);
 	const safeQuery = currentQuery.replace(/[&<>"']/g, (match) => {
 		const escape = {
 			'&': '&amp;',

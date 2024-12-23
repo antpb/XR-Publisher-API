@@ -57,6 +57,7 @@ esbuild.build({
         'unique-names-generator',
         'tough-cookie',
         'set-cookie-parser',
+        'cloudflare:workers',
         // Add node-specific modules to external
         'worker_threads',
         'node-domexception'

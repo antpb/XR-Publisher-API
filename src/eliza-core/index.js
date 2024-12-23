@@ -133,12 +133,6 @@ var ElizaLogger = class {
   constructor() {
     this.isNode = typeof process !== "undefined" && process.versions != null && process.versions.node != null;
     this.verbose = this.isNode ? process.env.VERBOSE === "true" : false;
-    console.log(`[ElizaLogger] Initializing with:
-            isNode: ${this.isNode}
-            verbose: ${this.verbose}
-            VERBOSE env: ${process.env.VERBOSE}
-            NODE_ENV: ${process.env.NODE_ENV}
-        `);
   }
   isNode;
   verbose = false;
@@ -241,10 +235,8 @@ var ElizaLogger = class {
     });
     if (this.isNode) {
       const c = this.#getColor(foregroundColor, backgroundColor);
-      console.log(c, processedStrings.join(""), this.#getColorReset());
     } else {
       const style = this.#getColor(foregroundColor, backgroundColor);
-      console.log(`%c${processedStrings.join("")}`, style);
     }
     if (this.closeByNewLine) console.log("");
   }
@@ -343,8 +335,6 @@ var ElizaLogger = class {
       process.stdout.clearLine(0);
       process.stdout.cursorTo(0);
       process.stdout.write(message);
-    } else {
-      console.log(message);
     }
   }
 };
@@ -967,9 +957,6 @@ function loadEnvConfig() {
   }
   const envPath = findNearestEnvFile();
   const result = config(envPath ? { path: envPath } : {});
-  if (!result.error) {
-    console.log(`Loaded .env file from: ${envPath}`);
-  }
   return process.env;
 }
 function getEnvVariable(key, defaultValue) {
@@ -1465,9 +1452,6 @@ async function embed(runtime, input) {
     logger_default.debug("DEBUG - Inside getLocalEmbedding function");
     const isNode2 = typeof process !== "undefined" && process.versions != null && process.versions.node != null;
     const isNext = typeof process !== "undefined" && process.versions != null && process.versions.next != null;
-    console.log("we have isNode", isNode2);
-    console.log("we have isNext", isNext);
-    console.log("process.versions", process.versions);
     if (!isNode2 && !isNext) {
       logger_default.warn(
         "Local embedding not supported in browser, falling back to remote embedding"

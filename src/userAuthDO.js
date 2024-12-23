@@ -130,7 +130,6 @@ export class UserAuthDO {
 			// Check if github_username column exists, add it if it doesn't
 			const columns = await this.sql.exec(`PRAGMA table_info(users)`).toArray();
 			if (!columns.some(col => col.name === 'github_username')) {
-				console.log("Adding github_username column to users table...");
 				await this.sql.exec(`ALTER TABLE users ADD COLUMN github_username TEXT`);
 			}
 
@@ -333,8 +332,6 @@ export class UserAuthDO {
 
 	async verifyGistAndRollKey(gistUrl, verificationToken) {
 		try {
-			console.log("Starting gist verification for token:", verificationToken);
-
 			// Verify the token is valid and not expired
 			const verification = await this.sql.exec(`
 					SELECT username FROM key_roll_verifications
@@ -347,11 +344,8 @@ export class UserAuthDO {
 				throw new Error('Invalid or expired verification token');
 			}
 
-			console.log("Found valid verification for username:", verification.username);
-
 			// Extract gist ID from URL
 			const gistId = gistUrl.split('/').pop();
-			console.log("Extracted gist ID:", gistId);
 
 			// Fetch gist content from GitHub API
 			const response = await fetch(`https://api.github.com/gists/${gistId}`, {
@@ -359,7 +353,6 @@ export class UserAuthDO {
 					'User-Agent': 'antpb-plugin-publisher'
 				}
 			});
-			console.log("GitHub API response status:", response.status);
 
 			if (!response.ok) {
 				const errorText = await response.text();
@@ -368,13 +361,8 @@ export class UserAuthDO {
 			}
 
 			const gistData = await response.json();
-			console.log("Gist data received:", {
-				owner: gistData.owner?.login,
-				files: Object.keys(gistData.files || {})
-			});
 
 			const expectedFilename = `plugin-publisher-verify-${verification.username}.txt`;
-			console.log("Looking for file:", expectedFilename);
 
 			// Verify gist content
 			const file = gistData.files[expectedFilename];
@@ -393,12 +381,6 @@ export class UserAuthDO {
 					SELECT github_username FROM users
 					WHERE username = ?
 				`, verification.username).one();
-
-			console.log("User record:", {
-				queried_username: verification.username,
-				found_github_username: user?.github_username,
-				gist_owner: gistData.owner?.login
-			});
 
 			if (!user || user.github_username !== gistData.owner.login) {
 				throw new Error(`GitHub username mismatch. Expected: ${user?.github_username}, Found: ${gistData.owner.login}`);
@@ -479,12 +461,7 @@ export class UserAuthDO {
 
 				case '/verify-key': {
 					const { apiKey } = body;
-					// log where this came from
-					console.log('verify-key', apiKey);
-					// log where this request originated
-					console.log('request.origin', request.origin);
 					const verifyResponse = await this.verifyApiKey(apiKey);
-					console.log("verifyResponse", verifyResponse);
 					return new Response(JSON.stringify(verifyResponse));
 				}
 

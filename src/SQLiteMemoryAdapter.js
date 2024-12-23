@@ -180,9 +180,6 @@ export class SQLiteMemoryAdapter {
 				console.error('Missing required roomId for memory creation');
 				return false;
 			}
-			console.log("userId", userId);
-			console.log("roomId", roomId);
-			console.log("agentId", agentId);
 	
 			// Check if room exists first
 			const roomExists = await this.sql.exec(`
@@ -190,7 +187,6 @@ export class SQLiteMemoryAdapter {
 			`, roomId).toArray();
 	
 			if (!roomExists.length) {
-				console.log('Creating room for memory:', roomId);
 				// Create room if it doesn't exist
 				await this.sql.exec(`
 					INSERT INTO rooms (
@@ -213,8 +209,6 @@ export class SQLiteMemoryAdapter {
 				createdAt,
 				isUnique: isUnique ? 1 : 0
 			};
-	
-			console.log('Creating memory:', { id: memory.id, type, roomId, userId, agentId });
 	
 			await this.sql.exec(`
 				INSERT INTO memories (
