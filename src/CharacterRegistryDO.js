@@ -1154,7 +1154,6 @@ export class CharacterRegistryDO {
 
 			const char = character[0];
 
-			// Rest remains the same
 			const messages = await this.sql.exec(`
 			SELECT conversation_id, user, content, message_order
 			FROM character_messages
@@ -1919,7 +1918,6 @@ export class CharacterRegistryDO {
 				}
 			}
 
-			// Rest of your existing nonce validation code...
 			if (nonce) {
 				const isValid = await this.nonceManager.validateNonce(sessionId, nonce);
 				if (!isValid) {
@@ -2163,12 +2161,12 @@ export class CharacterRegistryDO {
 	}
 
 
-	async deleteCharacter(author, slug) {  // Changed from name to slug
+	async deleteCharacter(author, slug) {
 		try {
 			// First, get the character ID
 			const characters = await this.sql.exec(`
 				SELECT id FROM characters 
-				WHERE author = ? AND slug = ?  // Changed from name to slug
+				WHERE author = ? AND slug = ?
 			  `, author, slug).toArray();
 
 			if (!characters.length) {
@@ -2177,7 +2175,6 @@ export class CharacterRegistryDO {
 
 			const characterId = characters[0].id;
 
-			// Rest remains the same...
 			await this.state.storage.transaction(async () => {
 				await this.sql.exec('DELETE FROM character_secrets WHERE character_id = ?', characterId);
 				await this.sql.exec('DELETE FROM character_clients WHERE character_id = ?', characterId);
@@ -2376,7 +2373,6 @@ export class CharacterRegistryDO {
 				throw new Error('Character not found');
 			}
 
-			// Rest of the function remains the same...
 			const characterId = characters[0].id;
 			const existingSecrets = await this.getCharacterSecrets(characterId);
 			const salt = crypto.randomUUID();
