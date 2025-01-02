@@ -210,6 +210,37 @@ export class CharacterRegistryDO {
 		}
 	}
 
+	async migrateWalletSchema() {
+		try {
+			await this.sql.exec('PRAGMA foreign_keys = OFF;');
+
+			// Create character_wallets table
+			await this.sql.exec(`
+			CREATE TABLE IF NOT EXISTS character_wallets (
+			  character_id INTEGER,
+			  chain TEXT,
+			  address TEXT,
+			  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+			  PRIMARY KEY (character_id, chain),
+			  FOREIGN KEY(character_id) REFERENCES characters(id)
+			)
+		  `);
+
+			// Create index for faster lookups
+			await this.sql.exec(`
+			CREATE INDEX IF NOT EXISTS idx_character_wallets 
+			ON character_wallets(character_id)
+		  `);
+
+			await this.sql.exec('PRAGMA foreign_keys = ON;');
+			return true;
+		} catch (error) {
+			console.error('Error in wallet schema migration:', error);
+			await this.sql.exec('PRAGMA foreign_keys = ON;');
+			throw error;
+		}
+	}
 
 	async migrateMemorySchema() {
 		try {
@@ -782,8 +813,13 @@ export class CharacterRegistryDO {
 			// await this.migrateStatusField();
 			// ('Status field added');
 
-			await this.migrateMemorySchema();
-			('Memory schema migrated');
+			// await this.migrateMemorySchema();
+			// ('Memory schema migrated');
+
+			await this.migrateWalletSchema();
+			('Wallet schema migrated');
+
+
 
 			return new Response(JSON.stringify({
 				success: true,
@@ -810,6 +846,34 @@ export class CharacterRegistryDO {
 		}
 	}
 
+	// Add these helper methods to handle wallet operations
+	async saveCharacterWallets(characterId, wallets) {
+		await this.sql.exec('DELETE FROM character_wallets WHERE character_id = ?', characterId);
+
+		for (const [chain, address] of Object.entries(wallets)) {
+			if (address) {  // Only insert non-empty addresses
+				await this.sql.exec(`
+			  INSERT INTO character_wallets (character_id, chain, address) 
+			  VALUES (?, ?, ?)
+			`, characterId, chain, address);
+			}
+		}
+	}
+
+	async getCharacterWallets(characterId) {
+		const walletRows = await this.sql.exec(`
+		  SELECT chain, address 
+		  FROM character_wallets 
+		  WHERE character_id = ?
+		`, characterId).toArray();
+
+		// Convert rows to object format expected by UI
+		return walletRows.reduce((acc, { chain, address }) => {
+			acc[chain] = address;
+			return acc;
+		}, {});
+	}
+
 	async cleanCharacterData(characterData) {
 		const cleanedCharacter = {
 			...characterData,
@@ -833,6 +897,9 @@ export class CharacterRegistryDO {
 			settings: {
 				...(characterData.settings || {}),
 				secrets: undefined
+			},
+			wallets: characterData.wallets || {
+				ETH: '0x0000000000000000000000000000000000000000'
 			}
 		};
 
@@ -915,6 +982,9 @@ export class CharacterRegistryDO {
 
 				const characterId = result[0].id;
 				('Created/updated character with ID:', characterId);
+				if (cleanedData.wallets) {
+					await this.saveCharacterWallets(characterId, cleanedData.wallets);
+				}
 
 				// Store secrets separately if provided
 				if (secrets?.openai || secrets?.anthropic) {
@@ -1072,6 +1142,7 @@ export class CharacterRegistryDO {
 					chat: styles.filter(s => s.category === 'chat').map(s => s.style_text),
 					post: styles.filter(s => s.category === 'post').map(s => s.style_text)
 				};
+				const wallets = await this.getCharacterWallets(char.id);
 
 				return {
 					name: char.name,
@@ -1090,6 +1161,7 @@ export class CharacterRegistryDO {
 					style: stylesByCategory,
 					adjectives: char.adjectives ? char.adjectives.split(',').filter(Boolean) : [],
 					settings: JSON.parse(char.settings || '{}'),
+					wallets,
 					created_at: char.created_at,
 					updated_at: char.updated_at
 				};
@@ -1172,6 +1244,7 @@ export class CharacterRegistryDO {
 				chat: styles.filter(s => s.category === 'chat').map(s => s.style_text),
 				post: styles.filter(s => s.category === 'post').map(s => s.style_text)
 			};
+			const wallets = await this.getCharacterWallets(characterId);
 
 			return {
 				id: characterId,
@@ -1191,6 +1264,7 @@ export class CharacterRegistryDO {
 				style: stylesByCategory,
 				adjectives: char.adjectives ? char.adjectives.split(',').filter(Boolean) : [],
 				settings: JSON.parse(char.settings || '{}'),
+				wallets,
 				created_at: char.created_at,
 				updated_at: char.updated_at
 			};
@@ -1215,7 +1289,7 @@ export class CharacterRegistryDO {
 				c.model_provider,
 				c.bio,
 				c.status,
-				c.slug,           /* Add slug to selection */
+				c.slug,
 				c.settings,
 				c.created_at,
 				c.updated_at
@@ -1224,18 +1298,22 @@ export class CharacterRegistryDO {
 			  ORDER BY c.updated_at ASC
 			`, author).toArray();
 
-				featuredCharacters.push(...characters.map(char => ({
-					author,
-					name: char.name,
-					slug: char.slug,     /* Add slug to return object */
-					bio: char.bio,
-					status: char.status || 'private',
-					vrmUrl: char.vrm_url,
-					profileImg: char.profile_img,
-					bannerImg: char.banner_img,
-					modelProvider: char.model_provider,
-					created_at: char.created_at,
-					updated_at: char.updated_at
+				featuredCharacters.push(...await Promise.all(characters.map(async char => {
+					const wallets = await this.getCharacterWallets(char.id);
+					return {
+						author,
+						name: char.name,
+						slug: char.slug,
+						bio: char.bio,
+						status: char.status || 'private',
+						vrmUrl: char.vrm_url,
+						profileImg: char.profile_img,
+						bannerImg: char.banner_img,
+						modelProvider: char.model_provider,
+						wallets,
+						created_at: char.created_at,
+						updated_at: char.updated_at
+					};
 				})));
 			}
 
@@ -1648,6 +1726,9 @@ export class CharacterRegistryDO {
 			
 			Key Character Traits:
 			${runtime.character.adjectives.map(adj => `- ${adj}`).join('\n')}
+
+			Wallets:
+			${Object.entries(runtime.character.wallets).map(([chain, address]) => `- ${chain}: ${address}`).join('\n')}
 			
 			Style Guidelines:
 			${runtime.character.style?.all.map(style => `- ${style}`).join('\n')}
@@ -2062,7 +2143,7 @@ export class CharacterRegistryDO {
 			const messages = [
 				{
 					role: "system",
-					content: `You are ${activeSession.character.name}. ${activeSession.character.bio}\n\nStyle: ${activeSession.character.style.all.join(", ")}`
+					content: `You are ${activeSession.character.name}. ${activeSession.character.bio}\n\nWallets:\n${Object.entries(activeSession.character.wallets).map(([coin, address]) => `${coin}: ${address}`).join('\n')}\n\nStyle: ${activeSession.character.style.all.join(", ")}`
 				},
 				{
 					role: "user",
@@ -2184,6 +2265,7 @@ export class CharacterRegistryDO {
 				await this.sql.exec('DELETE FROM character_topics WHERE character_id = ?', characterId);
 				await this.sql.exec('DELETE FROM character_styles WHERE character_id = ?', characterId);
 				await this.sql.exec('DELETE FROM character_adjectives WHERE character_id = ?', characterId);
+				await this.sql.exec('DELETE FROM character_wallets WHERE character_id = ?', characterId);
 				await this.sql.exec('DELETE FROM character_sessions WHERE character_id = ?', characterId);
 				await this.sql.exec('DELETE FROM characters WHERE id = ?', characterId);
 			});
@@ -2243,6 +2325,18 @@ export class CharacterRegistryDO {
 			await this.sql.exec("DELETE FROM character_topics WHERE character_id = ?", characterId);
 			await this.sql.exec("DELETE FROM character_styles WHERE character_id = ?", characterId);
 			await this.sql.exec("DELETE FROM character_adjectives WHERE character_id = ?", characterId);
+			await this.sql.exec('DELETE FROM character_wallets WHERE character_id = ?', characterId);
+
+			const wallets = character.wallets || {
+				ETH: '0x0000000000000000000000000000000000000000'
+			};
+
+			for (const [chain, address] of Object.entries(wallets)) {
+				await this.sql.exec('INSERT INTO character_wallets (character_id, chain, address) VALUES (?, ?, ?)', characterId, chain, address);
+			}
+
+			console.log('Wallets saved:', wallets);
+
 
 			const cleanedData = await this.cleanCharacterData(character);
 
