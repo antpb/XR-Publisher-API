@@ -3124,6 +3124,383 @@ export default {
 							});
 						}
 					}
+					case '/get-my-telegram-credentials': {
+						if (request.method !== 'POST') {
+						  return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+						  const { userId, characterName } = await request.json();
+						  // Auth check
+						  const authHeader = request.headers.get('Authorization');
+						  if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+							  status: 401,
+							  headers: { ...CORS_HEADERS }
+							});
+						  }
+						  const [, apiKey] = authHeader.split(' ');
+						  // Verify API key and username match
+						  const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						  if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+							  status: 401,
+							  headers: { ...CORS_HEADERS }
+							});
+						  }
+					  
+						  const id = env.CHARACTER_REGISTRY.idFromName("global");
+						  const registry = env.CHARACTER_REGISTRY.get(id);
+						  
+						  const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+							method: 'POST',
+							body: JSON.stringify({ author: userId, slug: characterName })
+						  }));
+					  
+						  if (!charResponse.ok) {
+							console.error('Character lookup failed:', await charResponse.text());
+							return new Response(JSON.stringify({ error: 'Character not found' }), {
+							  status: 404,
+							  headers: { ...CORS_HEADERS }
+							});
+						  }
+												
+						  const character = await charResponse.json();
+						  const credResponse = await registry.fetch(new Request('http://internal/get-telegram-credentials', {
+							method: 'POST',
+							body: JSON.stringify({ characterId: character.id }),
+						  }));
+					  
+						  return new Response(await credResponse.text(), {
+							status: credResponse.status,
+							headers: { ...CORS_HEADERS }
+						  });
+						} catch (error) {
+						  console.error('Telegram credentials error:', error);
+						  return new Response(JSON.stringify({
+							error: 'Internal server error',
+							details: error.message
+						  }), {
+							status: 500,
+							headers: { ...CORS_HEADERS }
+						  });
+						}
+					  }
+					  case '/api/telegram/message': {
+						if (request.method !== 'POST') {
+						  return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+						  const { userId, characterName, chatId, message, sessionId, roomId, nonce } = await request.json();
+						  const authHeader = request.headers.get('Authorization');
+						  if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+							  status: 401,
+							  headers: { ...CORS_HEADERS }
+							});
+						  }
+						  const [, apiKey] = authHeader.split(' ');
+					  
+						  const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						  if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+							  status: 401,
+							  headers: { ...CORS_HEADERS }
+							});
+						  }
+					  
+						  const id = env.CHARACTER_REGISTRY.idFromName("global");
+						  const registry = env.CHARACTER_REGISTRY.get(id);
+					  
+						  const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+							method: 'POST',
+							body: JSON.stringify({ author: userId, slug: characterName })
+						  }));
+					  
+						  if (!charResponse.ok) {
+							console.error('Character lookup failed:', await charResponse.text());
+							return new Response(JSON.stringify({ error: 'Character not found' }), {
+							  status: 404,
+							  headers: { ...CORS_HEADERS }
+							});
+						  }
+												
+						  const character = await charResponse.json();
+						  console.log('Character is:', character);
+						  return await registry.fetch(new Request('http://internal/telegram-message', {
+							method: 'POST',
+							body: JSON.stringify({
+							  characterId: character.id,
+							  chatId,
+							  message,
+							  sessionId,
+							  roomId,
+							  nonce
+							})
+						  }));
+						} catch (error) {
+						  console.error('Telegram message error:', error);
+						  return new Response(JSON.stringify({
+							error: 'Internal server error',
+							details: error.message
+						  }), {
+							status: 500,
+							headers: { ...CORS_HEADERS }
+						  });
+						}
+					  }
+					  
+					  case '/api/telegram/updates': {
+						if (request.method !== 'POST') {
+						  return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+						  const { userId, characterName, sessionId, roomId, nonce } = await request.json();
+					  
+						  const character = await this.getCharacter(userId, characterName);
+						  if (!character) {
+							throw new Error('Character not found');
+						  }
+					  
+						  const secrets = await this.getCharacterSecrets(character.id);
+						  if (!secrets?.modelKeys?.telegram_token) {
+							throw new Error('Telegram credentials not found');
+						  }
+					  
+						  const { TelegramClient } = await import('./telegram-client/index.js');
+						  const client = new TelegramClient({
+							token: secrets.modelKeys.telegram_token
+						  });
+					  
+						  const updates = await client.getUpdates();
+						  const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
+					  
+						  return new Response(JSON.stringify({
+							updates,
+							nonce: newNonce
+						  }), {
+							headers: {
+							  'Content-Type': 'application/json',
+							  ...CORS_HEADERS
+							}
+						  });
+						} catch (error) {
+						  console.error('Telegram updates error:', {
+							message: error.message,
+							stack: error.stack,
+							type: error.constructor.name
+						  });
+					  
+						  return new Response(JSON.stringify({
+							error: 'Failed to fetch updates',
+							details: error.message
+						  }), {
+							status: error.message.includes('not found') ? 404 : 500,
+							headers: { ...CORS_HEADERS }
+						  });
+						}
+					  }
+					  
+					  case '/api/telegram/reply': {
+						if (request.method !== 'POST') {
+						  return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+						  const { userId, characterName, messageId, replyText, chatId, sessionId, roomId, nonce } = await request.json();
+					  
+						  const character = await this.getCharacter(userId, characterName);
+						  if (!character) {
+							throw new Error('Character not found');
+						  }
+					  
+						  const secrets = await this.getCharacterSecrets(character.id);
+						  if (!secrets?.modelKeys?.telegram_token) {
+							throw new Error('Telegram credentials not found');
+						  }
+					  
+						  const { TelegramClient } = await import('./telegram-client/index.js');
+						  const client = new TelegramClient({
+							token: secrets.modelKeys.telegram_token
+						  });
+					  
+						  const result = await client.replyToMessage(chatId, messageId, replyText);
+						  const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
+					  
+						  return new Response(JSON.stringify({
+							message: result,
+							nonce: newNonce
+						  }), {
+							headers: { ...CORS_HEADERS }
+						  });
+						} catch (error) {
+						  console.error('Telegram reply error:', error);
+						  return new Response(JSON.stringify({
+							error: 'Failed to send reply',
+							details: error.message
+						  }), {
+							status: error.message.includes('not found') ? 404 : 500,
+							headers: { ...CORS_HEADERS }
+						  });
+						}
+					  }
+					  
+					  case '/api/telegram/edit': {
+						if (request.method !== 'POST') {
+						  return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+						  const { userId, characterName, messageId, newText, chatId, sessionId, roomId, nonce } = await request.json();
+					  
+						  const character = await this.getCharacter(userId, characterName);
+						  if (!character) {
+							throw new Error('Character not found');
+						  }
+					  
+						  const secrets = await this.getCharacterSecrets(character.id);
+						  if (!secrets?.modelKeys?.telegram_token) {
+							throw new Error('Telegram credentials not found');
+						  }
+					  
+						  const { TelegramClient } = await import('./telegram-client/index.js');
+						  const client = new TelegramClient({
+							token: secrets.modelKeys.telegram_token
+						  });
+					  
+						  const result = await client.editMessage(chatId, messageId, newText);
+						  const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
+					  
+						  return new Response(JSON.stringify({
+							message: result,
+							nonce: newNonce
+						  }), {
+							headers: { ...CORS_HEADERS }
+						  });
+						} catch (error) {
+						  console.error('Telegram edit error:', error);
+						  return new Response(JSON.stringify({
+							error: 'Failed to edit message',
+							details: error.message
+						  }), {
+							status: error.message.includes('not found') ? 404 : 500,
+							headers: { ...CORS_HEADERS }
+						  });
+						}
+					  }
+					  
+					  case '/api/telegram/pin': {
+						if (request.method !== 'POST') {
+						  return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+						  const { userId, characterName, messageId, chatId, sessionId, roomId, nonce } = await request.json();
+					  
+						  const character = await this.getCharacter(userId, characterName);
+						  if (!character) {
+							throw new Error('Character not found');
+						  }
+					  
+						  const secrets = await this.getCharacterSecrets(character.id);
+						  if (!secrets?.modelKeys?.telegram_token) {
+							throw new Error('Telegram credentials not found');
+						  }
+					  
+						  const { TelegramClient } = await import('./telegram-client/index.js');
+						  const client = new TelegramClient({
+							token: secrets.modelKeys.telegram_token
+						  });
+					  
+						  const result = await client.pinMessage(chatId, messageId);
+						  const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
+					  
+						  return new Response(JSON.stringify({
+							success: result,
+							nonce: newNonce
+						  }), {
+							headers: { ...CORS_HEADERS }
+						  });
+						} catch (error) {
+						  console.error('Telegram pin error:', error);
+						  return new Response(JSON.stringify({
+							error: 'Failed to pin message',
+							details: error.message
+						  }), {
+							status: error.message.includes('not found') ? 404 : 500,
+							headers: { ...CORS_HEADERS }
+						  });
+						}
+					  }
+					  case '/api/telegram/messages': {
+						if (request.method !== 'POST') {
+						  return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+						  const { userId, characterName, chatId, sessionId, roomId, nonce } = await request.json();
+						  
+						  // Auth check
+						  const authHeader = request.headers.get('Authorization');
+						  if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+							  status: 401,
+							  headers: { ...CORS_HEADERS }
+							});
+						  }
+						  const [, apiKey] = authHeader.split(' ');
+					  
+						  const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						  if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+							  status: 401,
+							  headers: { ...CORS_HEADERS }
+							});
+						  }
+					  
+						  const id = env.CHARACTER_REGISTRY.idFromName("global");
+						  const registry = env.CHARACTER_REGISTRY.get(id);
+					  
+						  // Get character to verify it exists and get ID
+						  const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+							method: 'POST', 
+							body: JSON.stringify({ author: userId, slug: characterName })
+						  }));
+					  
+						  if (!charResponse.ok) {
+							console.error('Character lookup failed:', await charResponse.text());
+							return new Response(JSON.stringify({ error: 'Character not found' }), {
+							  status: 404,
+							  headers: { ...CORS_HEADERS }
+							});
+						  }
+												
+						  const character = await charResponse.json();
+						  
+						  // Forward to internal handler
+						  const messagesResponse = await registry.fetch(new Request('http://internal/telegram-messages', {
+							method: 'POST',
+							body: JSON.stringify({
+							  characterId: character.id,
+							  chatId,
+							  sessionId,
+							  roomId, 
+							  nonce
+							})
+						  }));
+					  
+						  // Just return the response from CharacterRegistryDO which will include the nonce
+						  return new Response(await messagesResponse.text(), {
+							status: messagesResponse.status,
+							headers: { ...CORS_HEADERS }
+						  });
+						} catch (error) {
+						  console.error('Telegram messages error:', error);
+						  return new Response(JSON.stringify({
+							error: 'Internal server error',
+							details: error.message
+						  }), {
+							status: 500,
+							headers: { ...CORS_HEADERS }
+						  });
+						}
+					  }					  
+														  
 					case '/get-my-twitter-credentials': {
 						if (request.method !== 'POST') {
 							return new Response('Method not allowed', { status: 405 });
