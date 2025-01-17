@@ -1,0 +1,18 @@
+
+
+> @elizaos/client-telegram@0.1.7 build /Users/anthonyburchell/scratch/eliza/eliza/packages/client-telegram
+> tsup --format esm --dts
+
+[34mCLI[39m Building entry: src/index.ts
+[34mCLI[39m Using tsconfig: tsconfig.json
+[34mCLI[39m tsup v8.3.5
+[34mCLI[39m Using tsup config: /Users/anthonyburchell/scratch/eliza/eliza/packages/client-telegram/tsup.config.ts
+[34mCLI[39m Target: esnext
+[34mCLI[39m Cleaning output folder
+[34mESM[39m Build start
+[32mESM[39m [1mdist/index.js     [22m[32m37.40 KB[39m
+[32mESM[39m [1mdist/index.js.map [22m[32m77.41 KB[39m
+[32mESM[39m ⚡️ Build success in 14ms
+DTS Build start
+DTS ⚡️ Build success in 4082ms
+DTS dist/index.d.ts 161.00 B

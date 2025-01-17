@@ -2335,7 +2335,6 @@ export class CharacterRegistryDO {
 				await this.sql.exec('INSERT INTO character_wallets (character_id, chain, address) VALUES (?, ?, ?)', characterId, chain, address);
 			}
 
-			console.log('Wallets saved:', wallets);
 
 
 			const cleanedData = await this.cleanCharacterData(character);
@@ -2605,7 +2604,8 @@ export class CharacterRegistryDO {
 					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
 					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
 					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies)
+					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies),
+					TELEGRAM_BOT_TOKEN: secrets.modelKeys.telegram_token
 				}
 			};
 
@@ -2664,7 +2664,8 @@ export class CharacterRegistryDO {
 					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
 					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
 					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies)
+					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies),
+					TELEGRAM_BOT_TOKEN: secrets.modelKeys.telegram_token
 				}
 			};
 
@@ -2925,6 +2926,412 @@ export class CharacterRegistryDO {
 		}
 	}
 
+	async handleTelegramMessage(request) {
+		try {
+			const body = await request.json();
+
+			// Forward to story handler if it's a public post
+			if (!body.chatId) {
+				// Create a new request with the same body for the story handler
+				const storyRequest = new Request(request.url, {
+					method: request.method,
+					headers: request.headers,
+					body: JSON.stringify(body)
+				});
+				return this.handleTelegramStory(storyRequest);
+			}
+
+			// Rest of the existing message handling code...
+			const { characterId, message, chatId, sessionId, roomId, nonce } = body;
+
+			if (!characterId) {
+				throw new Error('Character ID is required');
+			}
+
+			// Get character secrets/credentials
+			const secrets = await this.getCharacterSecrets(characterId);
+			
+			if (!secrets?.modelKeys?.telegram_token) {
+				throw new Error('Telegram token not found');
+			}
+
+			// Initialize Telegram bot
+			const { Telegraf } = await import('telegraf');
+			const bot = new Telegraf(secrets.modelKeys.telegram_token);
+
+			// Send direct message if chatId is provided
+			const result = await bot.telegram.sendMessage(chatId, message, {
+				parse_mode: 'HTML',
+				disable_web_page_preview: false
+			});
+
+			return new Response(JSON.stringify({
+				message: result,
+				chatId: chatId
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		} catch (error) {
+			console.error('[handleTelegramMessage] Error:', {
+				name: error.name,
+				message: error.message,
+				stack: error.stack
+			});
+			
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack,
+				errorType: error.name
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
+	}
+
+	async handleTelegramCredentials(request) {
+		try {
+			const { characterId } = await request.json();
+			if (!characterId) {
+				throw new Error('Character ID is required');
+			}
+
+			// Get character and verify it exists
+			const characters = await this.sql.exec(`
+			SELECT * FROM characters WHERE id = ?
+		  `, characterId).toArray();
+
+			if (!characters.length) {
+				throw new Error('Character not found');
+			}
+
+			// Get secrets and Telegram credentials
+			const secrets = await this.getCharacterSecrets(characterId);
+			if (!secrets?.modelKeys?.telegram_token) {
+				return new Response(JSON.stringify({
+					token: null
+				}), {
+					headers: {
+						...CORS_HEADERS,
+						'Content-Type': 'application/json'
+					}
+				});
+			}
+
+			return new Response(JSON.stringify({
+				token: secrets.modelKeys.telegram_token
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		} catch (error) {
+			console.error('Get Telegram credentials error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to get Telegram credentials',
+				details: error.message
+			}), {
+				status: 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
+	}
+
+	async handleTelegramUpdates(request) {
+		try {
+			const { characterId } = await request.json();
+			if (!characterId) {
+				throw new Error('Character ID is required');
+			}
+
+			// Get character secrets/credentials
+			const secrets = await this.getCharacterSecrets(characterId);
+			if (!secrets?.modelKeys?.telegram_token) {
+				throw new Error('Telegram token not found');
+			}
+
+			const { TelegramClient } = await import('./telegram-client/index.js');
+			const client = new TelegramClient({
+				token: secrets.modelKeys.telegram_token
+			});
+
+			// Get updates from Telegram
+			const updates = await client.getUpdates();
+
+			return new Response(JSON.stringify({
+				updates
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		} catch (error) {
+			console.error('Internal Telegram updates error:', error);
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
+	}
+
+	async handleTelegramReply(request) {
+		try {
+			const { characterId, messageId, replyText, chatId } = await request.json();
+
+			// Get character secrets/credentials
+			const secrets = await this.getCharacterSecrets(characterId);
+			if (!secrets?.modelKeys?.telegram_token) {
+				throw new Error('Telegram token not found');
+			}
+
+			const { TelegramClient } = await import('./telegram-client/index.js');
+			const client = new TelegramClient({
+				token: secrets.modelKeys.telegram_token
+			});
+
+			// Send reply
+			const result = await client.replyToMessage(chatId, messageId, replyText);
+
+			return new Response(JSON.stringify({
+				message: result
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		} catch (error) {
+			console.error('Internal Telegram reply error:', error);
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
+	}
+
+	async handleTelegramEdit(request) {
+		try {
+			const { characterId, messageId, newText, chatId } = await request.json();
+
+			// Get character secrets/credentials
+			const secrets = await this.getCharacterSecrets(characterId);
+			if (!secrets?.modelKeys?.telegram_token) {
+				throw new Error('Telegram token not found');
+			}
+
+			const { TelegramClient } = await import('./telegram-client/index.js');
+			const client = new TelegramClient({
+				token: secrets.modelKeys.telegram_token
+			});
+
+			// Edit message
+			const result = await client.editMessage(chatId, messageId, newText);
+
+			return new Response(JSON.stringify({
+				message: result
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		} catch (error) {
+			console.error('Internal Telegram edit error:', error);
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
+	}
+
+	async handleTelegramPin(request) {
+		try {
+			const { characterId, messageId, chatId } = await request.json();
+
+			// Get character secrets/credentials
+			const secrets = await this.getCharacterSecrets(characterId);
+			if (!secrets?.modelKeys?.telegram_token) {
+				throw new Error('Telegram token not found');
+			}
+
+			const { TelegramClient } = await import('./telegram-client/index.js');
+			const client = new TelegramClient({
+				token: secrets.modelKeys.telegram_token
+			});
+
+			// Pin message
+			const result = await client.pinMessage(chatId, messageId);
+
+			return new Response(JSON.stringify({
+				success: result
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		} catch (error) {
+			console.error('Internal Telegram pin error:', error);
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
+	}
+
+	async handleTelegramMessages(request) {
+		try {
+			const body = await request.json();
+
+			const { userId, characterId, character, characterName, sessionId, roomId, nonce } = body;
+
+			// Get character ID from the character object or look it up by name
+			let resolvedCharacterId = characterId || character?.id;
+
+			if (!resolvedCharacterId && characterName) {
+				const char = await this.getCharacter(userId, characterName);
+				if (!char) {
+					throw new Error('Character not found');
+				}
+				resolvedCharacterId = char.id;
+			}
+
+			if (!resolvedCharacterId) {
+				throw new Error('Character ID could not be determined');
+			}
+
+			// Get character secrets/credentials
+			const secrets = await this.getCharacterSecrets(resolvedCharacterId);
+
+			if (!secrets?.modelKeys?.telegram_token) {
+				throw new Error('Telegram token not found');
+			}
+
+			// Initialize Telegram bot
+			const { Telegraf } = await import('telegraf');
+			const bot = new Telegraf(secrets.modelKeys.telegram_token);
+
+			// Verify bot access
+			const me = await bot.telegram.getMe();
+
+			// Get updates for all chats
+			const updates = await bot.telegram.getUpdates();
+			
+			// Log available chats for debugging
+			const availableChats = updates.map(update => ({
+				chat_id: update.message?.chat.id,
+				chat_title: update.message?.chat.title,
+				chat_type: update.message?.chat.type,
+				last_message: update.message?.date
+			})).filter(chat => chat.chat_id);
+			
+
+			// Format messages for the client
+			const messages = updates
+				.filter(update => {
+					const msg = update.message || update.edited_message || update.channel_post || update.edited_channel_post;
+					return msg && msg.chat && msg.chat.id; // Ensure chat ID exists
+				})
+				.map(update => {
+					const msg = update.message || update.edited_message || update.channel_post || update.edited_channel_post;
+					return {
+						id: msg.message_id,
+						text: msg.text || msg.caption || '',
+						createdAt: msg.date * 1000, // Convert to milliseconds
+						chatId: msg.chat.id,
+						chat: {
+							id: msg.chat.id,
+							title: msg.chat.title || msg.chat.username || 'Direct Message',
+							type: msg.chat.type
+						},
+						user: {
+							id: msg.from?.id,
+							name: msg.from?.first_name || msg.from?.username || 'Unknown',
+							profileImage: null
+						},
+						isEdited: !!update.edited_message || !!update.edited_channel_post,
+						replyToMessage: msg.reply_to_message ? {
+							id: msg.reply_to_message.message_id,
+							text: msg.reply_to_message.text || msg.reply_to_message.caption || ''
+						} : null
+					};
+				});
+
+
+			// Sort messages by date descending
+			messages.sort((a, b) => b.createdAt - a.createdAt);
+
+			// Create new nonce for session continuity
+			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
+
+			return new Response(JSON.stringify({
+				messages,
+				nonce: newNonce.nonce,
+				botInfo: me,
+				availableChats,
+				totalUpdates: updates.length,
+				filteredCount: messages.length
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		} catch (error) {
+			console.error('[handleTelegramMessages] Error:', {
+				name: error.name,
+				message: error.message,
+				stack: error.stack
+			});
+			
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack,
+				errorType: error.name
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
+	}
 
 	async fetch(request) {
 		if (request.method === "GET") {
@@ -2937,6 +3344,24 @@ export class CharacterRegistryDO {
 			switch (url.pathname) {
 				case '/migrate-schema': {
 					return await this.handleMigrateSchema();
+				}
+				case '/api/telegram/messages': {
+					return await this.handleTelegramMessages(request);
+				}
+				case '/api/telegram/message': {
+					return await this.handleTelegramMessage(request);
+				}
+				case '/api/telegram/reply': {
+					return await this.handleTelegramReply(request);
+				}
+				case '/api/telegram/edit': {
+					return await this.handleTelegramEdit(request);
+				}
+				case '/api/telegram/pin': {
+					return await this.handleTelegramPin(request);
+				}
+				case '/get-my-telegram-credentials': {
+					return await this.handleTelegramCredentials(request);
 				}
 				case '/send-chat-message': {
 					const { sessionId, message, nonce, apiKey } = await request.json();
@@ -2975,6 +3400,32 @@ export class CharacterRegistryDO {
 						});
 					}
 				}
+				case '/get-telegram-credentials': {
+					return await this.handleTelegramCredentials(request);
+				}
+
+				case '/telegram-updates': {
+					return await this.handleTelegramUpdates(request);
+				}
+
+				case '/telegram-reply': {
+					return await this.handleTelegramReply(request);
+				}
+
+				case '/telegram-edit': {
+					return await this.handleTelegramEdit(request);
+				}
+
+				case '/telegram-pin': {
+					return await this.handleTelegramPin(request);
+				}
+				case '/telegram-messages': {
+					return await this.handleTelegramMessages(request);
+				}
+				case '/telegram-message': {
+					return await this.handleTelegramMessage(request);
+				}
+
 				case '/send-message': {
 					const { sessionId, message, nonce, apiKey } = await request.json();
 					if (!sessionId || !message) {
@@ -3375,5 +3826,118 @@ export class CharacterRegistryDO {
 		}
 
 		return new Response('Method not allowed', { status: 405 });
+	}
+
+	async handleTelegramStory(request) {
+		try {
+			const body = await request.json();
+
+			const { characterId, message, sessionId, roomId, nonce } = body;
+
+			if (!characterId) {
+				throw new Error('Character ID is required');
+			}
+
+			// Get character secrets/credentials
+			const secrets = await this.getCharacterSecrets(characterId);
+			
+			if (!secrets?.modelKeys?.telegram_token) {
+				throw new Error('Telegram token not found');
+			}
+
+			// Initialize Telegram bot
+			const { Telegraf } = await import('telegraf');
+			const bot = new Telegraf(secrets.modelKeys.telegram_token);
+
+			// Get bot info
+			const me = await bot.telegram.getMe();
+
+			// Try to get the channel directly if we have the ID stored
+			let channelId = secrets.modelKeys.telegram_channel_id;
+			let channelInfo;
+
+			if (channelId) {
+				try {
+					channelInfo = await bot.telegram.getChat(channelId);
+				} catch (e) {
+					channelId = null;
+				}
+			}
+
+			// If no stored channel or it's not accessible, look for channels in updates
+			if (!channelId) {
+				const updates = await bot.telegram.getUpdates();
+
+				// Look for channels in updates
+				const channels = updates
+					.filter(update => {
+						const chat = update.message?.chat || update.channel_post?.chat;
+						return chat && chat.type === 'channel';
+					})
+					.map(update => ({
+						id: update.message?.chat.id || update.channel_post?.chat.id,
+						title: update.message?.chat.title || update.channel_post?.chat.title
+					}));
+
+
+				if (channels.length > 0) {
+					channelId = channels[0].id;
+					try {
+						channelInfo = await bot.telegram.getChat(channelId);
+					} catch (e) {
+						channelId = null;
+					}
+				}
+			}
+
+			// If still no channel, try to get member chats
+			if (!channelId) {
+				try {
+					const adminChats = await bot.telegram.getMyCommands();
+				} catch (e) {
+				}
+			}
+
+			if (!channelId) {
+				throw new Error('No channel found. Please add the bot to a channel as an admin and send at least one message.');
+			}
+
+			// Send the message to the channel
+			const result = await bot.telegram.sendMessage(channelId, message, {
+				parse_mode: 'HTML',
+				disable_web_page_preview: false
+			});
+			
+
+			return new Response(JSON.stringify({
+				success: true,
+				message: result,
+				channelId: channelId,
+				channelInfo: channelInfo
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		} catch (error) {
+			console.error('[handleTelegramStory] Error:', {
+				name: error.name,
+				message: error.message,
+				stack: error.stack
+			});
+			
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack,
+				errorType: error.name
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
 	}
 }
