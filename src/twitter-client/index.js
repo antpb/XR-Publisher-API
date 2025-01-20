@@ -81,15 +81,96 @@ export class TwitterClient {
         }
     }
 
-    async sendTweet(text, replyToId = null) {
+    async uploadMedia(mediaData) {
         await this.initialize();
-
         try {
-            // Construct cookie string directly from stored cookies
             const cookieString = this.cookies
                 .map(cookie => `${cookie.key}=${cookie.value}`)
                 .join('; ');
 
+            const headers = new Headers({
+                'authorization': `Bearer ${this.bearerToken}`,
+                'cookie': cookieString,
+                'content-type': 'application/json',
+                'x-csrf-token': this.csrfToken,
+                'x-twitter-auth-type': 'OAuth2Client'
+            });
+
+            // First, initialize the upload
+            const initResponse = await fetch('https://upload.twitter.com/1.1/media/upload.json?command=INIT', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    command: 'INIT',
+                    total_bytes: mediaData.data.length,
+                    media_type: mediaData.mediaType
+                })
+            });
+
+            if (!initResponse.ok) {
+                throw new Error(`Failed to initialize media upload: ${await initResponse.text()}`);
+            }
+
+            const initData = await initResponse.json();
+            const mediaId = initData.media_id_string;
+
+            // Then, upload the media in chunks
+            const chunkSize = 5 * 1024 * 1024; // 5MB chunks
+            const chunks = Math.ceil(mediaData.data.length / chunkSize);
+
+            for (let i = 0; i < chunks; i++) {
+                const start = i * chunkSize;
+                const end = Math.min(start + chunkSize, mediaData.data.length);
+                const chunk = mediaData.data.slice(start, end);
+
+                const appendResponse = await fetch('https://upload.twitter.com/1.1/media/upload.json?command=APPEND', {
+                    method: 'POST',
+                    headers: {
+                        ...headers,
+                        'content-type': 'multipart/form-data'
+                    },
+                    body: JSON.stringify({
+                        command: 'APPEND',
+                        media_id: mediaId,
+                        segment_index: i,
+                        media_data: chunk.toString('base64')
+                    })
+                });
+
+                if (!appendResponse.ok) {
+                    throw new Error(`Failed to append media chunk: ${await appendResponse.text()}`);
+                }
+            }
+
+            // Finally, finalize the upload
+            const finalizeResponse = await fetch('https://upload.twitter.com/1.1/media/upload.json?command=FINALIZE', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    command: 'FINALIZE',
+                    media_id: mediaId
+                })
+            });
+
+            if (!finalizeResponse.ok) {
+                throw new Error(`Failed to finalize media upload: ${await finalizeResponse.text()}`);
+            }
+
+            const finalizeData = await finalizeResponse.json();
+            return finalizeData.media_id_string;
+        } catch (error) {
+            console.error('Error uploading media:', error);
+            throw error;
+        }
+    }
+
+    async sendTweet(text, replyToId = null, mediaData = null) {
+        await this.initialize();
+
+        try {
+            const cookieString = this.cookies
+                .map(cookie => `${cookie.key}=${cookie.value}`)
+                .join('; ');
 
             const headers = new Headers({
                 'authorization': `Bearer ${this.bearerToken}`,
@@ -112,6 +193,16 @@ export class TwitterClient {
                 },
                 semantic_annotation_ids: []
             };
+
+            // Handle media upload if provided
+            if (mediaData) {
+                const mediaIds = [];
+                for (const media of Array.isArray(mediaData) ? mediaData : [mediaData]) {
+                    const mediaId = await this.uploadMedia(media);
+                    mediaIds.push(mediaId);
+                }
+                variables.media.media_entities = mediaIds.map(id => ({ media_id: id }));
+            }
 
             if (replyToId) {
                 variables.reply = { in_reply_to_tweet_id: replyToId };
@@ -379,6 +470,45 @@ export class TwitterClient {
     //             throw error;
     //         }
     //     }
+
+    async classifyTweet(text) {
+        await this.initialize();
+        try {
+            const cookieString = this.cookies
+                .map(cookie => `${cookie.key}=${cookie.value}`)
+                .join('; ');
+
+            const headers = new Headers({
+                'authorization': `Bearer ${this.bearerToken}`,
+                'cookie': cookieString,
+                'content-type': 'application/json',
+                'x-csrf-token': this.csrfToken,
+                'x-twitter-auth-type': 'OAuth2Client'
+            });
+
+            const response = await fetch('https://api.twitter.com/1.1/help/safety/detect_sensitive_media.json', {
+                method: 'POST',
+                headers,
+                body: JSON.stringify({
+                    text: text
+                })
+            });
+
+            if (!response.ok) {
+                throw new Error(`Failed to classify tweet: ${await response.text()}`);
+            }
+
+            const data = await response.json();
+            return {
+                isSensitive: data.isSensitive || false,
+                categories: data.categories || [],
+                confidence: data.confidence || 0
+            };
+        } catch (error) {
+            console.error('Error classifying tweet:', error);
+            throw error;
+        }
+    }
 }
 
 export const TwitterClientInterface = {

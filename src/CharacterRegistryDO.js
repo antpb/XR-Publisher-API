@@ -3820,6 +3820,12 @@ export class CharacterRegistryDO {
 						});
 					}
 				}
+				case '/handle-twitter-classify': {
+					return await this.handleTwitterClassify(request);
+				}
+				case '/handle-twitter-post-with-media': {
+					return await this.handleTwitterPostWithMedia(request);
+				}
 				default:
 					return new Response('Not found', { status: 404 });
 			}
@@ -3931,6 +3937,138 @@ export class CharacterRegistryDO {
 				error: error.message,
 				details: error.stack,
 				errorType: error.name
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
+	}
+
+	async handleTwitterClassify(request) {
+		try {
+			const { userId, characterName, text } = await request.json();
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
+
+			// Get secrets for auth
+			const secrets = await this.getCharacterSecrets(character.id);
+
+			// Import the TwitterClientInterface
+			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+
+			// Create runtime settings object from secrets
+			const runtime = {
+				settings: {
+					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
+					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
+					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies),
+					TELEGRAM_BOT_TOKEN: secrets.modelKeys.telegram_token
+				}
+			};
+
+			// Initialize the Twitter client using the interface
+			const client = await TwitterClientInterface.start(runtime);
+
+			// Classify the tweet
+			const classification = await client.classifyTweet(text);
+
+			return new Response(JSON.stringify({
+				success: true,
+				classification
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+
+		} catch (error) {
+			console.error('Twitter classification error:', error);
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
+	}
+
+	async handleTwitterPostWithMedia(request) {
+		try {
+			const formData = await request.formData();
+			const userId = formData.get('userId');
+			const characterName = formData.get('characterName');
+			const tweet = formData.get('tweet');
+			const sessionId = formData.get('sessionId');
+			const roomId = formData.get('roomId');
+			const nonce = formData.get('nonce');
+			const mediaFiles = formData.getAll('media');
+
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
+
+			// Get secrets for auth
+			const secrets = await this.getCharacterSecrets(character.id);
+
+			// Import the TwitterClientInterface
+			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+
+			// Create runtime settings object from secrets
+			const runtime = {
+				settings: {
+					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
+					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
+					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies),
+					TELEGRAM_BOT_TOKEN: secrets.modelKeys.telegram_token
+				}
+			};
+
+			// Initialize the Twitter client using the interface
+			const client = await TwitterClientInterface.start(runtime);
+
+			// Process media files
+			const mediaData = await Promise.all(mediaFiles.map(async (file) => {
+				const arrayBuffer = await file.arrayBuffer();
+				return {
+					data: Buffer.from(arrayBuffer),
+					mediaType: file.type
+				};
+			}));
+
+			// Send the tweet with media
+			const result = await client.sendTweet(tweet, null, mediaData);
+
+			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
+
+			return new Response(JSON.stringify({
+				success: true,
+				tweet: result,
+				nonce: newNonce.nonce
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+
+		} catch (error) {
+			console.error('Twitter post with media error:', error);
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack
 			}), {
 				status: error.message.includes('not found') ? 404 : 500,
 				headers: {
