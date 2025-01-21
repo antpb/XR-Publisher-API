@@ -246,4 +246,268 @@ export class EnhancedSQLiteMemoryAdapter extends SQLiteMemoryAdapter {
 			console.warn(`WARNING: Memory count (${totalMemories}) has exceeded warning threshold`);
 		}
 	}
+
+	async deleteMemory(memoryId) {
+		try {
+			await this.sql.exec(`
+				DELETE FROM memories 
+				WHERE id = ?
+			`, memoryId);
+			
+			// Remove from cache
+			this.memories.delete(memoryId);
+			return true;
+		} catch (error) {
+			console.error('Error deleting memory:', error);
+			return false;
+		}
+	}
+
+	async findMemories(query, options = {}) {
+		try {
+			const { limit = 10, type = null } = options;
+			
+			// First try exact content match
+			let memories = await this.sql.exec(`
+				SELECT * FROM memories 
+				WHERE content LIKE ?
+				${type ? 'AND type = ?' : ''}
+				ORDER BY createdAt DESC
+				LIMIT ?
+			`, `%${query}%`, ...(type ? [type] : []), limit).toArray();
+
+			// If we have embeddings, also try semantic search
+			if (memories.length < limit && this.searchMemoriesByEmbedding) {
+				const embedding = await this.createEmbedding(query);
+				if (embedding) {
+					const semanticResults = await this.searchMemoriesByEmbedding(embedding, {
+						limit: limit - memories.length,
+						type
+					});
+					memories = [...memories, ...semanticResults];
+				}
+			}
+
+			return memories.map(m => ({
+				id: m.id,
+				type: m.type,
+				content: JSON.parse(m.content),
+				userId: m.userId,
+				roomId: m.roomId,
+				agentId: m.agentId,
+				createdAt: parseInt(m.createdAt),
+				isUnique: Boolean(m.isUnique),
+				importance_score: m.importance_score,
+				metadata: m.metadata ? JSON.parse(m.metadata) : null
+			}));
+		} catch (error) {
+			console.error('Error finding memories:', error);
+			return [];
+		}
+	}
+
+	async updateMemory(memory) {
+		try {
+			const { id } = memory;
+
+			console.log('[EnhancedSQLiteMemoryAdapter.updateMemory] Starting update:', {
+				id,
+				updates: Object.keys(memory).filter(k => k !== 'id')
+			});
+
+			// First verify the memory exists and get current values
+			const existing = await this.sql.exec('SELECT * FROM memories WHERE id = ? LIMIT 1', id).toArray();
+			console.log('[EnhancedSQLiteMemoryAdapter.updateMemory] Memory exists check:', {
+				id,
+				exists: existing.length > 0
+			});
+
+			if (!existing.length) {
+				console.error('[EnhancedSQLiteMemoryAdapter.updateMemory] Memory not found:', id);
+				return false;
+			}
+
+			// Build update query dynamically based on provided fields
+			const updates = [];
+			const params = [];
+			
+			if ('type' in memory) {
+				updates.push('type = ?');
+				params.push(memory.type);
+			}
+			if ('content' in memory) {
+				updates.push('content = ?');
+				// Ensure content is stringified if it's an object
+				params.push(typeof memory.content === 'string' ? memory.content : JSON.stringify(memory.content));
+			}
+			if ('userId' in memory) {
+				updates.push('userId = ?');
+				params.push(memory.userId);
+			}
+			if ('userName' in memory) {
+				updates.push('userName = ?');
+				params.push(memory.userName);
+			}
+			// Update importance_score if it's provided in the payload
+			if ('importance_score' in memory) {
+				updates.push('importance_score = ?');
+				params.push(memory.importance_score);
+				console.log('[EnhancedSQLiteMemoryAdapter.updateMemory] Updating importance score:', memory.importance_score);
+			}
+
+			// Only proceed if we have updates to make
+			if (updates.length === 0) {
+				console.log('[EnhancedSQLiteMemoryAdapter.updateMemory] No fields to update');
+				return true;
+			}
+
+			// Add the id as the last parameter
+			params.push(id);
+
+			const query = `
+				UPDATE memories 
+				SET ${updates.join(', ')}
+				WHERE id = ?
+			`;
+
+			console.log('[EnhancedSQLiteMemoryAdapter.updateMemory] Executing update:', {
+				query,
+				params: params.map((p, i) => i === params.length - 1 ? `id: ${p}` : `param${i}: ${p}`)
+			});
+
+			await this.sql.exec(query, ...params);
+
+			const changes = await this.sql.exec('SELECT changes() as count').toArray();
+			const success = changes[0].count > 0;
+
+			console.log('[EnhancedSQLiteMemoryAdapter.updateMemory] Update result:', {
+				success,
+				changes: changes[0].count
+			});
+
+			return success;
+		} catch (error) {
+			console.error('[EnhancedSQLiteMemoryAdapter.updateMemory] Error:', {
+				message: error.message,
+				stack: error.stack,
+				type: error.constructor.name
+			});
+			return false;
+		}
+	}
+
+	async getAllMemoriesByCharacter(characterId, options = {}) {
+		try {
+			const { limit = 100, type = null } = options;
+			console.log('[getAllMemoriesByCharacter] Input:', { characterId, options });
+
+			// First get all unique rooms for this character
+			const roomsQuery = 'SELECT DISTINCT roomId FROM memories WHERE agentId = ?';
+			const rooms = await this.sql.exec(roomsQuery, characterId).toArray();
+			console.log('[getAllMemoriesByCharacter] Found rooms:', rooms.map(r => r.roomId));
+
+			const query = `
+				SELECT * FROM memories 
+				WHERE agentId = ?
+				${type ? 'AND type = ?' : ''}
+				ORDER BY createdAt DESC
+				LIMIT ?
+			`;
+
+			const params = [characterId];
+			if (type) params.push(type);
+			params.push(limit);
+
+			console.log('[getAllMemoriesByCharacter] Query:', {
+				sql: query,
+				params,
+				paramTypes: params.map(p => typeof p)
+			});
+
+			const memories = await this.sql.exec(query, ...params).toArray();
+			console.log('[getAllMemoriesByCharacter] Found memories:', {
+				count: memories.length,
+				firstFew: memories.slice(0, 3).map(m => ({
+					id: m.id,
+					type: m.type,
+					roomId: m.roomId,
+					createdAt: m.createdAt
+				}))
+			});
+
+			const result = memories.map(m => ({
+				id: m.id,
+				type: m.type,
+				content: JSON.parse(m.content),
+				userId: m.userId,
+				roomId: m.roomId,
+				agentId: m.agentId,
+				createdAt: parseInt(m.createdAt),
+				isUnique: Boolean(m.isUnique),
+				importance_score: m.importance_score,
+				metadata: m.metadata ? JSON.parse(m.metadata) : null
+			}));
+
+			console.log('[getAllMemoriesByCharacter] Processed results:', {
+				totalCount: result.length,
+				uniqueRooms: [...new Set(result.map(m => m.roomId))],
+				uniqueTypes: [...new Set(result.map(m => m.type))]
+			});
+
+			return result;
+		} catch (error) {
+			console.error('[getAllMemoriesByCharacter] Error:', {
+				message: error.message,
+				stack: error.stack,
+				type: error.constructor.name
+			});
+			return [];
+		}
+	}
+
+	// Keep this for backward compatibility but make it use the new method
+	async getAllMemoriesBySessionId(sessionId, options = {}) {
+		try {
+			const { type = null, getAllMemories = false } = options;
+			
+			// If getAllMemories is true, get the character ID from any memory with this session ID
+			if (getAllMemories) {
+				const sessionQuery = 'SELECT DISTINCT agentId FROM memories WHERE userId = ? LIMIT 1';
+				const agents = await this.sql.exec(sessionQuery, sessionId).toArray();
+				
+				if (agents.length > 0) {
+					return this.getAllMemoriesByCharacter(agents[0].agentId, { type });
+				}
+			}
+			
+			// Fall back to session-based retrieval if getAllMemories is false or no agent found
+			const query = `
+				SELECT * FROM memories 
+				WHERE userId = ?
+				${type ? 'AND type = ?' : ''}
+				ORDER BY createdAt DESC
+				LIMIT 100
+			`;
+
+			const params = [sessionId];
+			if (type) params.push(type);
+
+			const memories = await this.sql.exec(query, ...params).toArray();
+			return memories.map(m => ({
+				id: m.id,
+				type: m.type,
+				content: JSON.parse(m.content),
+				userId: m.userId,
+				roomId: m.roomId,
+				agentId: m.agentId,
+				createdAt: parseInt(m.createdAt),
+				isUnique: Boolean(m.isUnique),
+				importance_score: m.importance_score,
+				metadata: m.metadata ? JSON.parse(m.metadata) : null
+			}));
+		} catch (error) {
+			console.error('[getAllMemoriesBySessionId] Error:', error);
+			return [];
+		}
+	}
 }

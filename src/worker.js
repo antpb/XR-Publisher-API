@@ -2359,7 +2359,197 @@ export default {
 			});
 		}
 	},
+	async handleDeleteMemory(request, env) {
+		try {
+		  const { sessionId, memoryId } = await request.json();
+		  
+		  if (!sessionId || !memoryId) {
+			return new Response(JSON.stringify({
+			  error: 'Missing required fields'
+			}), {
+			  status: 400,
+			  headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+			});
+		  }
+	  
+		  const id = env.CHARACTER_REGISTRY.idFromName("global");
+		  const registry = env.CHARACTER_REGISTRY.get(id);
+	  
+		  const response = await registry.fetch(new Request('http://internal/delete-memory', {
+			method: 'POST',
+			body: JSON.stringify({ sessionId, memoryId })
+		  }));
+	  
+		  return new Response(await response.text(), {
+			status: response.status,
+			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+		  });
+		} catch (error) {
+		  console.error('Delete memory error:', error);
+		  return new Response(JSON.stringify({
+			error: 'Internal server error',
+			details: error.message
+		  }), {
+			status: 500,
+			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+		  });
+		}
+	  },
+	  
+	  async handleFindMemory(request, env) {
+		try {
+		  const { sessionId, query } = await request.json();
+		  
+		  if (!sessionId || !query) {
+			return new Response(JSON.stringify({
+			  error: 'Missing required fields'
+			}), {
+			  status: 400,
+			  headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+			});
+		  }
+	  
+		  const id = env.CHARACTER_REGISTRY.idFromName("global");
+		  const registry = env.CHARACTER_REGISTRY.get(id);
+	  
+		  const response = await registry.fetch(new Request('http://internal/find-memory', {
+			method: 'POST',
+			body: JSON.stringify({ sessionId, query })
+		  }));
+	  
+		  return new Response(await response.text(), {
+			status: response.status,
+			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+		  });
+		} catch (error) {
+		  console.error('Find memory error:', error);
+		  return new Response(JSON.stringify({
+			error: 'Internal server error',
+			details: error.message
+		  }), {
+			status: 500,
+			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+		  });
+		}
+	  },
+	  
+	  async handleUpdateMemory(request, env) {
+		try {
+			const { sessionId, memoryId, content, type, userId, importance_score = 0, metadata = {} } = await request.json();
+			console.log('[handleUpdateMemory] Request params:', { 
+				sessionId, 
+				memoryId, 
+				type,
+				userId,
+				importance_score,
+				contentSample: content ? JSON.stringify(content).slice(0, 100) : 'No content'
+			});
 
+			const id = env.CHARACTER_REGISTRY.idFromName("global");
+			const registry = env.CHARACTER_REGISTRY.get(id);
+
+			const response = await registry.fetch(new Request('http://internal/handle-update-memory', {
+				method: 'POST',
+				body: JSON.stringify({ 
+					sessionId, 
+					memoryId, 
+					content,
+					importance_score,
+					type, 
+					userId 
+				})
+			}));
+
+			const responseText = await response.text();
+			console.log('[handleUpdateMemory] DO Response:', { 
+				status: response.status,
+				body: responseText.slice(0, 200) + '...'
+			});
+
+			return new Response(responseText, {
+				status: response.status,
+				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+			});
+		} catch (error) {
+			console.error('Update memory error:', error);
+			return new Response(JSON.stringify({
+				error: 'Internal server error',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+			});
+		}
+	  },
+	  
+	  async handleMemoryList(request, env) {
+		try {
+		  let sessionId, type, slug;
+		  
+		  if (request.method === 'GET') {
+			const url = new URL(request.url);
+			sessionId = url.searchParams.get('sessionId');
+			slug = url.searchParams.get('slug');
+			type = url.searchParams.get('type');
+		  } else if (request.method === 'POST') {
+			const body = await request.json();
+			sessionId = body.sessionId;
+			slug = body.slug;
+			type = body.type;
+		  } else {
+			return new Response(JSON.stringify({
+			  error: 'Method not allowed'
+			}), {
+			  status: 405,
+			  headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+			});
+		  }
+
+		  console.log('[handleMemoryList] Request params:', { sessionId, type, slug, method: request.method });
+
+		  if (!sessionId) {
+			return new Response(JSON.stringify({
+			  error: 'Missing sessionId parameter'
+			}), {
+			  status: 400,
+			  headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+			});
+		  }
+
+		  const id = env.CHARACTER_REGISTRY.idFromName("global");
+		  const registry = env.CHARACTER_REGISTRY.get(id);
+	  
+		  const response = await registry.fetch(new Request('http://internal/handle-memory-list', {
+			method: 'POST',
+			body: JSON.stringify({ slug, sessionId, type })
+		  }));
+
+		  const responseText = await response.text();
+		  console.log('[handleMemoryList] Response:', { 
+			status: response.status,
+			headers: Object.fromEntries(response.headers),
+			body: responseText.slice(0, 200) + '...'
+		  });
+	  
+		  return new Response(responseText, {
+			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+		  });
+		} catch (error) {
+		  console.error('[handleMemoryList] Error:', {
+			message: error.message,
+			stack: error.stack,
+			type: error.constructor.name
+		  });
+		  return new Response(JSON.stringify({
+			error: 'Internal server error',
+			details: error.message
+		  }), {
+			status: 500,
+			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+		  });
+		}
+	  },
+	  
 	async fetch(request, env) {
 		const url = new URL(request.url);
 		const path = url.pathname;
@@ -2447,6 +2637,7 @@ export default {
 			'/discord/check',
 			'/discord/interactions',
 			'/interactions',
+			'/memory-list',
 			'/init',
 			'/check'
 		].includes(path)) {
@@ -2485,6 +2676,9 @@ export default {
 					}
 					case '/version-check': {
 						return this.handleVersionCheck(request, env);
+					}
+					case '/memory-list': {
+						return await this.handleMemoryList(request, env);
 					}
 					case '/visit-count': {
 						return this.getVisitCount(request, env);
@@ -3847,6 +4041,234 @@ export default {
 
 						return await auth.fetch(internalRequest);
 					}
+					case '/api/twitter/classify': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, text } = await request.json();
+
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author: userId, slug: characterName })
+							}));
+
+							if (!charResponse.ok) {
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const character = await charResponse.json();
+
+							return await registry.fetch(new Request('http://internal/handle-twitter-classify', {
+								method: 'POST',
+								body: JSON.stringify({
+									userId,
+									characterName,
+									text
+								})
+							}));
+						} catch (error) {
+							console.error('Twitter classify error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+
+					case '/api/twitter/post-with-media': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const formData = await request.formData();
+							const userId = formData.get('userId');
+							const characterName = formData.get('characterName');
+
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author: userId, slug: characterName })
+							}));
+
+							if (!charResponse.ok) {
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const character = await charResponse.json();
+
+							// Forward the entire FormData to the internal handler
+							return await registry.fetch(new Request('http://internal/handle-twitter-post-with-media', {
+								method: 'POST',
+								body: request.body,
+								headers: {
+									'Content-Type': request.headers.get('Content-Type')
+								}
+							}));
+						} catch (error) {
+							console.error('Twitter post with media error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+
+					case '/api/vision/describe': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, image } = await request.json();
+
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							// Call OpenAI's vision API
+							const headers = {
+								"Content-Type": "application/json",
+								"Authorization": `Bearer ${env.OPENAI_API_KEY}`
+							};
+
+							const payload = {
+								"model": "gpt-4-turbo",
+								"messages": [
+									{
+										"role": "user",
+										"content": [
+											{
+												"type": "text",
+												"text": "Describe this image in a concise way that would be natural to include in a tweet. Focus on the main subject and any notable details. Keep it under 100 characters."
+											},
+											{
+												"type": "image_url",
+												"image_url": {
+													"url": image
+												}
+											}
+										]
+									}
+								],
+								"max_tokens": 100
+							};
+
+							const response = await fetch("https://api.openai.com/v1/chat/completions", {
+								method: 'POST',
+								headers: headers,
+								body: JSON.stringify(payload)
+							});
+
+							if (!response.ok) {
+								const errorData = await response.json();
+								console.error('OpenAI API error:', {
+									status: response.status,
+									statusText: response.statusText,
+									error: errorData
+								});
+								throw new Error(`OpenAI API error: ${JSON.stringify(errorData.error || errorData)}`);
+							}
+
+							const data = await response.json();
+							const description = data.choices[0].message.content.trim();
+
+							return new Response(JSON.stringify({
+								success: true,
+								description
+							}), {
+								headers: {
+									...CORS_HEADERS,
+									'Content-Type': 'application/json'
+								}
+							});
+
+						} catch (error) {
+							console.error('Vision API error:', error);
+							return new Response(JSON.stringify({
+								error: 'Failed to generate image description',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+					case '/delete-memory': {
+						return await this.handleDeleteMemory(request, env);
+					}
+					case '/find-memory': {
+						return await this.handleFindMemory(request, env);
+					}
+					case '/update-memory': {
+						return await this.handleUpdateMemory(request, env);
+					}
+					case '/memory-list': {
+						return await this.handleMemoryList(request, env);
+					}
 					default: {
 						return new Response(JSON.stringify({ error: 'Invalid endpoint' }), {
 							status: 404,
@@ -3870,4 +4292,5 @@ export default {
 			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
 		});
 	}
-};
+}
+
