@@ -2497,14 +2497,20 @@ export class CharacterRegistryDO {
 
 	async handleCreateMemory(request) {
 		try {
-			const { sessionId, memory } = await request.json();
-
+			const { sessionId, memory, type = 'message' } = await request.json();
 			const session = await this.initializeSession(sessionId);
 			if (!session?.runtime?.databaseAdapter) {
 				throw new Error('Session not initialized');
 			}
 
-			await session.runtime.databaseAdapter.createMemory(memory);
+			// Ensure agentId is set to the character's ID and type is set
+			const memoryWithAgentId = {
+				...memory,
+				agentId: session.character.id,
+				type: type
+			};
+
+			await session.runtime.databaseAdapter.createMemory(memoryWithAgentId);
 
 			return new Response(JSON.stringify({
 				success: true,
@@ -3549,6 +3555,23 @@ export class CharacterRegistryDO {
 	
 			// Send the tweet with media
 			const result = await client.sendTweet(tweet, null, mediaData);
+
+			// Create a memory for this tweet
+			const memory = {
+				content: tweet,
+				type: 'post-tweet',
+				agentId: character.id,
+				userId,
+				sessionId,
+				roomId,
+				createdAt: new Date().toISOString(),
+				metadata: {
+					hasMedia: true,
+					mediaCount: mediaFiles.length
+				}
+			};
+
+			await this.runtime.databaseAdapter.createMemory(memory);
 	
 			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
 	
@@ -3580,47 +3603,160 @@ export class CharacterRegistryDO {
 	
 	async handleDeleteMemory(request) {
 		try {
-			const { sessionId, memoryId } = await request.json();
-			
-			// Get runtime from session
-			const runtime = await this.getRuntimeFromToken(sessionId);
-			if (!runtime) {
-				return new Response(JSON.stringify({ error: 'Invalid session' }), { status: 401 });
+			const { sessionId, memoryId, username } = await request.json();
+			console.log('[CharacterRegistryDO.handleDeleteMemory] Request params:', {
+				sessionId,
+				memoryId,
+				username
+			});
+
+			if (!this.memoryAdapter) {
+				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
+				await this.memoryAdapter.initializeSchema();
 			}
-	
-			const success = await runtime.memory.deleteMemory(memoryId);
+
+			// First get the memory to verify ownership
+			const memory = await this.memoryAdapter.getMemoryById(memoryId);
+			if (!memory) {
+				return new Response(JSON.stringify({
+					error: 'Memory not found',
+					details: `No memory found with ID ${memoryId}`
+				}), { 
+					status: 404,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+
+			console.log('[CharacterRegistryDO.handleDeleteMemory] Found memory:', {
+				id: memory.id,
+				agentId: memory.agentId,
+				userId: memory.userId
+			});
+
+			// Extract the base character ID by removing the decimal part
+			const characterId = memory.agentId.split('.')[0];
+			console.log('[CharacterRegistryDO.handleDeleteMemory] Looking up character:', {
+				characterId,
+				originalAgentId: memory.agentId,
+				username
+			});
+
+			// Get character by ID and verify ownership
+			const characters = await this.sql.exec(`
+					SELECT * FROM characters WHERE id = ? LIMIT 1
+				`, characterId).toArray();
+
+			if (!characters.length) {
+				return new Response(JSON.stringify({
+					error: 'Character not found',
+					details: 'Associated character no longer exists'
+				}), { 
+					status: 404,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+
+			const character = characters[0];
+			console.log('[CharacterRegistryDO.handleDeleteMemory] Found character:', {
+				id: character.id,
+				author: character.author,
+				requestingUser: username,
+				fields: Object.keys(character)
+			});
+
+			// Verify character ownership using 'author' field
+			if (character.author !== username) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized',
+					details: 'You do not have permission to delete this character\'s memories'
+				}), {
+					status: 403,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+
+			const success = await this.memoryAdapter.deleteMemory(memoryId);
 			if (!success) {
-				return new Response(JSON.stringify({ error: 'Failed to delete memory' }), { status: 500 });
+				return new Response(JSON.stringify({
+					error: 'Failed to delete memory'
+				}), { 
+					status: 500,
+					headers: { 'Content-Type': 'application/json' }
+				});
 			}
-	
-			return new Response(JSON.stringify({ success: true }));
+
+			return new Response(JSON.stringify({ success: true }), {
+				headers: { 'Content-Type': 'application/json' }
+			});
 		} catch (error) {
-			console.error('Error in handleDeleteMemory:', error);
-			return new Response(JSON.stringify({ error: 'Internal server error' }), { status: 500 });
+			console.error('[CharacterRegistryDO.handleDeleteMemory] Error:', {
+				message: error.message,
+				stack: error.stack
+			});
+			return new Response(JSON.stringify({
+				error: 'Internal server error',
+				details: error.message
+			}), { 
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
 		}
 	}
-	
+
 	async handleFindMemory(request) {
 		try {
-			const { sessionId, query } = await request.json();
-			
-			// Get runtime from session
-			const runtime = await this.getRuntimeFromToken(sessionId);
-			if (!runtime) {
-				return new Response(JSON.stringify({ error: 'Invalid session' }), { status: 401 });
+			const { sessionId, query, agentId, username } = await request.json();
+			console.log('[CharacterRegistryDO.handleFindMemory] Request params:', { 
+				sessionId, 
+				query,
+				agentId,
+				username,
+			});
+
+			// First verify the character exists and belongs to the user
+			const character = await this.getCharacter(username, agentId);
+			if (!character) {
+				return new Response(JSON.stringify({ 
+					error: 'Character not found',
+					details: 'Invalid character or unauthorized access'
+				}), { status: 404 });
 			}
-	
-			const memories = await runtime.memory.findMemories(query);
-			return new Response(JSON.stringify(memories));
+
+			// Initialize memory adapter if needed
+			if (!this.memoryAdapter) {
+				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
+			}
+
+			// Search for memories but only for this specific agent
+			const memories = await this.memoryAdapter.findMemories(query, {
+				agentId: character.slug,  // Use numeric ID instead of slug
+				userId: username
+			});
+
+			console.log('[CharacterRegistryDO.handleFindMemory] Found memories:', { 
+				count: memories.length,
+				query,
+				agentId: character.id  // Update log to show numeric ID
+			});
+
+			return new Response(JSON.stringify(memories), {
+				headers: { 'Content-Type': 'application/json' }
+			});
 		} catch (error) {
-			console.error('Error in handleFindMemory:', error);
-			return new Response(JSON.stringify({ error: 'Internal server error' }), { status: 500 });
+			console.error('[CharacterRegistryDO.handleFindMemory] Error:', {
+				message: error.message,
+				stack: error.stack
+			});
+			return new Response(JSON.stringify({ 
+				error: 'Internal server error',
+				details: error.message 
+			}), { status: 500 });
 		}
 	}
 	
 	async handleUpdateMemory(request) {
 		try {
-			const { sessionId, memoryId, content, type, userId, importance_score = 0 } = await request.json();
+			const { sessionId, memoryId, content, type, userId, importance_score = 0, username } = await request.json();
 			console.log('[handleUpdateMemory] Request params:', { 
 				memoryId, 
 				type,
@@ -3633,12 +3769,38 @@ export class CharacterRegistryDO {
 				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
 			}
 
+			// First get the memory to verify ownership
 			const memory = await this.memoryAdapter.getMemoryById(memoryId);
 			if (!memory) {
 				return new Response(JSON.stringify({
 					error: 'Memory not found',
 					details: `No memory found with ID ${memoryId}`
 				}), { status: 404 });
+			}
+
+			// Get the character to verify ownership
+			const characters = await this.sql.exec(`
+				SELECT * FROM characters WHERE id = ? LIMIT 1
+			`, memory.agentId).toArray();
+
+			if (!characters.length) {
+				return new Response(JSON.stringify({
+					error: 'Character not found',
+					details: 'Associated character no longer exists'
+				}), { status: 404 });
+			}
+
+			const character = characters[0];
+			
+			// Verify character ownership
+			if (character.owner !== username) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized',
+					details: 'You do not have permission to update this character\'s memories'
+				}), {
+					status: 403,
+					headers: { 'Content-Type': 'application/json' }
+				});
 			}
 
 			// Keep existing content structure but update the values
@@ -3655,7 +3817,7 @@ export class CharacterRegistryDO {
 				content: JSON.stringify(mergedContent),
 				userId: userId || memory.userId,
 				importance_score: importance_score || memory.importance_score || 0,
-					metadata: memory.metadata // Keep existing metadata unchanged
+				metadata: memory.metadata // Keep existing metadata unchanged
 			});
 
 			if (!success) {
@@ -3681,13 +3843,13 @@ export class CharacterRegistryDO {
 	
 	async handleMemoryList(request) {
 		try {
-			const { slug, sessionId, type } = await request.json();
-			console.log('[CharacterRegistryDO] Memory list params:', { slug, sessionId, type });
+			const { slug, sessionId, type, username } = await request.json();
+			console.log('[CharacterRegistryDO] Memory list params:', { slug, sessionId, type, username });
 
 			// Initialize memory adapter if not already done
 			if (!this.memoryAdapter) {
 				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
-				await this.memoryAdapter.initializeSchema();
+					await this.memoryAdapter.initializeSchema();
 			}
 
 			// Get character by slug
@@ -3706,6 +3868,18 @@ export class CharacterRegistryDO {
 			}
 
 			const character = characters[0];
+			
+			// Verify character ownership using 'author' field instead of 'owner'
+			if (character.author !== username) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized',
+					details: 'You do not have permission to access this character\'s memories'
+				}), {
+					status: 403,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+
 			console.log('[CharacterRegistryDO] Found character:', { id: character.id, slug: character.slug });
 
 			// Get memories using character ID
@@ -3714,8 +3888,8 @@ export class CharacterRegistryDO {
 			});
 
 			console.log('[CharacterRegistryDO] Memory list result:', {
-				count: memories.length,
-				types: memories.length > 0 ? [...new Set(memories.map(m => m.type))] : []
+					count: memories.length,
+					types: memories.length > 0 ? [...new Set(memories.map(m => m.type))] : []
 			});
 
 			return new Response(JSON.stringify(memories), {
@@ -3812,7 +3986,7 @@ export class CharacterRegistryDO {
 	}
 
 	async fetch(request) {
-		const url = new URL(request.url);
+			const url = new URL(request.url);
 		const path = url.pathname;
 		
 		console.log('[CharacterRegistryDO] Handling request:', {
@@ -3821,131 +3995,30 @@ export class CharacterRegistryDO {
 		});
 
 		switch (path) {
-			case '/migrate-schema': {
-				return await this.handleMigrateSchema();
-			}
-			case '/api/telegram/messages': {
-				return await this.handleTelegramMessages(request);
-			}
-			case '/api/telegram/message': {
-				return await this.handleTelegramMessage(request);
-			}
-			case '/api/telegram/reply': {
-				return await this.handleTelegramReply(request);
-			}
-			case '/api/telegram/edit': {
-				return await this.handleTelegramEdit(request);
-			}
-			case '/api/telegram/pin': {
-				return await this.handleTelegramPin(request);
-			}
-			case '/get-my-telegram-credentials': {
-				return await this.handleTelegramCredentials(request);
-			}
-			case '/send-chat-message': {
-				const { sessionId, message, nonce, apiKey } = await request.json();
-				if (!sessionId || !message) {
-					return new Response(JSON.stringify({
-						error: 'Missing required fields'
-					}), {
-						status: 400,
-						headers: { 'Content-Type': 'application/json' }
-					});
+				case '/migrate-schema': {
+					return await this.handleMigrateSchema();
 				}
-
-				try {
-
-					if (!apiKey) {
-						const response = await this.handleMessage(sessionId, message, nonce);
-						return new Response(JSON.stringify(response), {
-							headers: { 'Content-Type': 'application/json' }
-						});
-
-					} else {
-						const [authType, authToken] = apiKey.split(' ');
-
-						const response = await this.handleMessage(sessionId, message, nonce, authToken);
-						return new Response(JSON.stringify(response), {
-							headers: { 'Content-Type': 'application/json' }
-						});
-					}
-				} catch (error) {
-					return new Response(JSON.stringify({
-						error: 'Message handling failed',
-						details: error.message
-					}), {
-						status: error.message.includes('Invalid or expired nonce') ? 401 : 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
+				case '/api/telegram/messages': {
+					return await this.handleTelegramMessages(request);
 				}
-			}
-			case '/get-telegram-credentials': {
-				return await this.handleTelegramCredentials(request);
-			}
-
-			case '/telegram-updates': {
-				return await this.handleTelegramUpdates(request);
-			}
-
-			case '/telegram-reply': {
-				return await this.handleTelegramReply(request);
-			}
-
-			case '/telegram-edit': {
-				return await this.handleTelegramEdit(request);
-			}
-
-			case '/telegram-pin': {
-				return await this.handleTelegramPin(request);
-			}
-			case '/telegram-messages': {
-				return await this.handleTelegramMessages(request);
-			}
-			case '/telegram-message': {
-				return await this.handleTelegramMessage(request);
-			}
-
-			case '/send-message': {
-				const { sessionId, message, nonce, apiKey } = await request.json();
-				if (!sessionId || !message) {
-					return new Response(JSON.stringify({
-						error: 'Missing required fields'
-					}), {
-						status: 400,
-						headers: { 'Content-Type': 'application/json' }
-					});
+				case '/api/telegram/message': {
+					return await this.handleTelegramMessage(request);
 				}
-
-				try {
-
-					if (!apiKey) {
-						const response = await this.handleMessage(sessionId, message, nonce);
-						return new Response(JSON.stringify(response), {
-							headers: { 'Content-Type': 'application/json' }
-						});
-
-					} else {
-						const [authType, authToken] = apiKey.split(' ');
-						const response = await this.handleMessage(sessionId, message, nonce, authToken);
-						return new Response(JSON.stringify(response), {
-							headers: { 'Content-Type': 'application/json' }
-						});
-					}
-				} catch (error) {
-					return new Response(JSON.stringify({
-						error: 'Message handling failed',
-						details: error.message
-					}), {
-						status: error.message.includes('Invalid or expired nonce') ? 401 : 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
+				case '/api/telegram/reply': {
+					return await this.handleTelegramReply(request);
 				}
-			}
-			case '/create-character': {
-				try {
-					const { author, character } = await request.json();
-
-					if (!author || !character) {
+				case '/api/telegram/edit': {
+					return await this.handleTelegramEdit(request);
+				}
+				case '/api/telegram/pin': {
+					return await this.handleTelegramPin(request);
+				}
+				case '/get-my-telegram-credentials': {
+					return await this.handleTelegramCredentials(request);
+				}
+				case '/send-chat-message': {
+					const { sessionId, message, nonce, apiKey } = await request.json();
+					if (!sessionId || !message) {
 						return new Response(JSON.stringify({
 							error: 'Missing required fields'
 						}), {
@@ -3954,68 +4027,61 @@ export class CharacterRegistryDO {
 						});
 					}
 
-					const characterId = await this.createOrUpdateCharacter(author, character);
+					try {
 
-					return new Response(JSON.stringify({
-						success: true,
-						characterId,
-						message: 'Character created successfully'
-					}), {
-						headers: { 'Content-Type': 'application/json' }
-					});
-				} catch (error) {
-					console.error('Create character error:', error);
-					return new Response(JSON.stringify({
-						error: 'Failed to create character',
-						details: error.message
-					}), {
-						status: 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
+						if (!apiKey) {
+							const response = await this.handleMessage(sessionId, message, nonce);
+							return new Response(JSON.stringify(response), {
+								headers: { 'Content-Type': 'application/json' }
+							});
+
+						} else {
+							const [authType, authToken] = apiKey.split(' ');
+
+							const response = await this.handleMessage(sessionId, message, nonce, authToken);
+							return new Response(JSON.stringify(response), {
+								headers: { 'Content-Type': 'application/json' }
+							});
+						}
+					} catch (error) {
+						return new Response(JSON.stringify({
+							error: 'Message handling failed',
+							details: error.message
+						}), {
+							status: error.message.includes('Invalid or expired nonce') ? 401 : 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
 				}
-			}
+				case '/get-telegram-credentials': {
+					return await this.handleTelegramCredentials(request);
+				}
 
-			case '/update-character-metadata': {
-				const { author, character } = await request.json();
-				const characterId = await this.updateCharacterMetadata(author, character);
-				return new Response(JSON.stringify({
-					success: true,
-					characterId,
-					message: 'Character metadata updated successfully'
-				}), {
-					headers: { 'Content-Type': 'application/json' }
-				});
-			}
+				case '/telegram-updates': {
+					return await this.handleTelegramUpdates(request);
+				}
 
-			case '/update-character-images': {
-				const { author, characterName, updates } = await request.json();
-				const result = await this.updateCharacterImages(author, characterName, updates);
-				return new Response(JSON.stringify({
-					success: true,
-					result,
-					message: 'Character images updated successfully'
-				}), {
-					headers: { 'Content-Type': 'application/json' }
-				});
-			}
+				case '/telegram-reply': {
+					return await this.handleTelegramReply(request);
+				}
 
-			case '/update-character-secrets': {
-				const { author, character } = await request.json();
-				await this.updateCharacterSecrets(author, character.slug, character.settings.secrets);
-				return new Response(JSON.stringify({
-					success: true,
-					message: 'Character secrets updated successfully'
-				}), {
-					headers: { 'Content-Type': 'application/json' }
-				});
-			}
+				case '/telegram-edit': {
+					return await this.handleTelegramEdit(request);
+				}
 
+				case '/telegram-pin': {
+					return await this.handleTelegramPin(request);
+				}
+				case '/telegram-messages': {
+					return await this.handleTelegramMessages(request);
+				}
+				case '/telegram-message': {
+					return await this.handleTelegramMessage(request);
+				}
 
-			case '/update-character': {
-				try {
-					const { author, character } = await request.json();
-
-					if (!author || !character) {
+				case '/send-message': {
+					const { sessionId, message, nonce, apiKey } = await request.json();
+					if (!sessionId || !message) {
 						return new Response(JSON.stringify({
 							error: 'Missing required fields'
 						}), {
@@ -4024,307 +4090,487 @@ export class CharacterRegistryDO {
 						});
 					}
 
-					const characterId = await this.createOrUpdateCharacter(author, character);
+					try {
 
+						if (!apiKey) {
+							const response = await this.handleMessage(sessionId, message, nonce);
+							return new Response(JSON.stringify(response), {
+								headers: { 'Content-Type': 'application/json' }
+							});
+
+						} else {
+							const [authType, authToken] = apiKey.split(' ');
+							const response = await this.handleMessage(sessionId, message, nonce, authToken);
+							return new Response(JSON.stringify(response), {
+								headers: { 'Content-Type': 'application/json' }
+							});
+						}
+					} catch (error) {
+						return new Response(JSON.stringify({
+							error: 'Message handling failed',
+							details: error.message
+						}), {
+							status: error.message.includes('Invalid or expired nonce') ? 401 : 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+				case '/create-character': {
+					try {
+						const { author, character } = await request.json();
+
+						if (!author || !character) {
+							return new Response(JSON.stringify({
+								error: 'Missing required fields'
+							}), {
+								status: 400,
+								headers: { 'Content-Type': 'application/json' }
+							});
+						}
+
+						const characterId = await this.createOrUpdateCharacter(author, character);
+
+						return new Response(JSON.stringify({
+							success: true,
+							characterId,
+							message: 'Character created successfully'
+						}), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+					} catch (error) {
+						console.error('Create character error:', error);
+						return new Response(JSON.stringify({
+							error: 'Failed to create character',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+
+				case '/update-character-metadata': {
+					const { author, character } = await request.json();
+					const characterId = await this.updateCharacterMetadata(author, character);
 					return new Response(JSON.stringify({
 						success: true,
 						characterId,
-						message: 'Character updated successfully'
+						message: 'Character metadata updated successfully'
 					}), {
 						headers: { 'Content-Type': 'application/json' }
 					});
-				} catch (error) {
-					console.error('Update character error:', error);
-					return new Response(JSON.stringify({
-						error: 'Failed to update character',
-						details: error.message
-					}), {
-						status: 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
-				}
-			}
-			case '/get-discord-credentials': {
-				try {
-					const { characterId, env } = await request.json();
-
-					if (!characterId) {
-						return new Response(JSON.stringify({
-							error: 'Missing characterId'
-						}), {
-							status: 400,
-							headers: { 'Content-Type': 'application/json' }
-						});
-					}
-
-					// Use existing secrets infrastructure 
-					const secrets = await this.getCharacterSecrets(characterId);
-					// Extract just Discord-specific credentials
-					const discordCreds = {
-						appId: secrets.modelKeys.discord_app_id,
-						token: secrets.modelKeys.discord_token,
-						publicKey: secrets.modelKeys.discord_public_key,
-					};
-
-					return new Response(JSON.stringify(discordCreds), {
-						headers: { 'Content-Type': 'application/json' }
-					});
-
-				} catch (error) {
-					console.error('Error getting Discord credentials:', error);
-					return new Response(JSON.stringify({
-						error: 'Internal server error',
-						details: error.message
-					}), {
-						status: 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
-				}
-			}
-			case '/get-twitter-credentials': {
-				try {
-					const { characterId } = await request.json();
-
-					if (!characterId) {
-						return new Response(JSON.stringify({
-							error: 'Missing characterId'
-						}), {
-							status: 400,
-							headers: { 'Content-Type': 'application/json' }
-						});
-					}
-
-					// Use existing secrets infrastructure 
-					const secrets = await this.getCharacterSecrets(characterId);
-					// Extract just Discord-specific credentials
-					const discordCreds = {
-						TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
-						TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-						TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
-						twitter_cookies: secrets.modelKeys.twitter_cookies
-					};
-
-					return new Response(JSON.stringify(discordCreds), {
-						headers: { 'Content-Type': 'application/json' }
-					});
-
-				} catch (error) {
-					console.error('Error getting twitter credentials:', error);
-					return new Response(JSON.stringify({
-						error: 'Internal server error',
-						details: error.message
-					}), {
-						status: 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
-				}
-			}
-			case '/twitter-post': {
-				try {
-					return await this.handleInternalTwitterPost(request);
-				} catch (error) {
-					console.error('Twitter notifications handler error:', error);
-					return new Response(JSON.stringify({
-						error: `Failed to post: ${error.message}`,
-						details: error.message
-					}), {
-						status: 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
-				}
-			}
-
-			case '/api/twitter/notifications': {
-				if (request.method !== 'POST') {
-					return new Response('Method not allowed', { status: 405 });
 				}
 
-				try {
-					return await this.handleTwitterNotifications(request);
-				} catch (error) {
-					console.error('Twitter notifications handler error:', error);
-					return new Response(JSON.stringify({
-						error: 'Failed to fetch notifications',
-						details: error.message
-					}), {
-						status: 500,
-						headers: { ...CORS_HEADERS }
-					});
-				}
-			}
-			case '/twitter-like': {
-				return await this.handleTwitterLike(request);
-			}
-
-			case '/twitter-reply': {
-				try {
-					return await this.handleTwitterReply(request);
-				} catch (error) {
-					console.error('Twitter reply handler error:', error);
-					return new Response(JSON.stringify({
-						error: 'Failed to send reply',
-						details: error.message
-					}), {
-						status: 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
-				}
-			}
-
-			case '/twitter-retweet': {
-				try {
-					return await this.handleTwitterRetweet(request);
-				} catch (error) {
-					console.error('Twitter retweet handler error:', error);
-					return new Response(JSON.stringify({
-						error: 'Failed to retweet',
-						details: error.message
-					}), {
-						status: 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
-				}
-			}
-
-			case '/create-memory': {
-				return await this.handleCreateMemory(request);
-			}
-
-			case '/get-memories': {
-				return await this.handleGetMemories(request);
-			}
-
-			case '/get-memories-by-rooms': {
-				return await this.handleGetMemoriesByRooms(request);
-			}
-
-			case '/delete-character': {
-				const { author, name } = await request.json();
-				try {
-					await this.deleteCharacter(author, name);
+				case '/update-character-images': {
+					const { author, characterName, updates } = await request.json();
+					const result = await this.updateCharacterImages(author, characterName, updates);
 					return new Response(JSON.stringify({
 						success: true,
-						message: 'Character deleted successfully'
+						result,
+						message: 'Character images updated successfully'
 					}), {
-						headers: { 'Content-Type': 'application/json' }
-					});
-				} catch (error) {
-					console.error('Delete character error:', error);
-					return new Response(JSON.stringify({
-						error: 'Failed to delete character',
-						details: error.message
-					}), {
-						status: 500,
 						headers: { 'Content-Type': 'application/json' }
 					});
 				}
-			}
-			case '/get-character': {
-				try {
-					const { author, name, slug } = await request.json();
-					// Get character config
-					const character = await this.getCharacter(author, slug);
 
-					if (!character) {
-						return new Response(JSON.stringify({ error: 'Character not found' }), {
-							status: 404,
+				case '/update-character-secrets': {
+					const { author, character } = await request.json();
+					await this.updateCharacterSecrets(author, character.slug, character.settings.secrets);
+					return new Response(JSON.stringify({
+						success: true,
+						message: 'Character secrets updated successfully'
+					}), {
+						headers: { 'Content-Type': 'application/json' }
+					});
+				}
+
+
+				case '/update-character': {
+					try {
+						const { author, character } = await request.json();
+
+						if (!author || !character) {
+							return new Response(JSON.stringify({
+								error: 'Missing required fields'
+							}), {
+								status: 400,
+								headers: { 'Content-Type': 'application/json' }
+							});
+						}
+
+						const characterId = await this.createOrUpdateCharacter(author, character);
+
+						return new Response(JSON.stringify({
+							success: true,
+							characterId,
+							message: 'Character updated successfully'
+						}), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+					} catch (error) {
+						console.error('Update character error:', error);
+						return new Response(JSON.stringify({
+							error: 'Failed to update character',
+							details: error.message
+						}), {
+							status: 500,
 							headers: { 'Content-Type': 'application/json' }
 						});
 					}
-
-					return new Response(JSON.stringify(character), {
-						headers: { 'Content-Type': 'application/json' }
-					});
-				} catch (error) {
-					console.error('Get character error:', error);
-					return new Response(JSON.stringify({
-						error: 'Internal server error',
-						details: error.message
-					}), {
-						status: 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
 				}
-			}
-			case '/get-featured-characters': {
-				try {
-					const { authors } = await request.json();
-					const characters = await this.getFeaturedCharacters(authors);
+				case '/get-discord-credentials': {
+					try {
+						const { characterId, env } = await request.json();
+
+						if (!characterId) {
+							return new Response(JSON.stringify({
+								error: 'Missing characterId'
+							}), {
+								status: 400,
+								headers: { 'Content-Type': 'application/json' }
+							});
+						}
+
+						// Use existing secrets infrastructure 
+						const secrets = await this.getCharacterSecrets(characterId);
+						// Extract just Discord-specific credentials
+						const discordCreds = {
+							appId: secrets.modelKeys.discord_app_id,
+							token: secrets.modelKeys.discord_token,
+							publicKey: secrets.modelKeys.discord_public_key,
+						};
+
+						return new Response(JSON.stringify(discordCreds), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+
+					} catch (error) {
+						console.error('Error getting Discord credentials:', error);
+						return new Response(JSON.stringify({
+							error: 'Internal server error',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+				case '/get-twitter-credentials': {
+					try {
+						const { characterId } = await request.json();
+
+						if (!characterId) {
+							return new Response(JSON.stringify({
+								error: 'Missing characterId'
+							}), {
+								status: 400,
+								headers: { 'Content-Type': 'application/json' }
+							});
+						}
+
+						// Use existing secrets infrastructure 
+						const secrets = await this.getCharacterSecrets(characterId);
+						// Extract just Discord-specific credentials
+						const discordCreds = {
+							TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
+							TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+							TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
+							twitter_cookies: secrets.modelKeys.twitter_cookies
+						};
+
+						return new Response(JSON.stringify(discordCreds), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+
+					} catch (error) {
+						console.error('Error getting twitter credentials:', error);
+						return new Response(JSON.stringify({
+							error: 'Internal server error',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+				case '/twitter-post': {
+					try {
+						return await this.handleInternalTwitterPost(request);
+					} catch (error) {
+						console.error('Twitter notifications handler error:', error);
+						return new Response(JSON.stringify({
+							error: `Failed to post: ${error.message}`,
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+
+				case '/api/twitter/notifications': {
+					if (request.method !== 'POST') {
+						return new Response('Method not allowed', { status: 405 });
+					}
+
+					try {
+						return await this.handleTwitterNotifications(request);
+					} catch (error) {
+						console.error('Twitter notifications handler error:', error);
+						return new Response(JSON.stringify({
+							error: 'Failed to fetch notifications',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { ...CORS_HEADERS }
+						});
+					}
+				}
+				case '/twitter-like': {
+					return await this.handleTwitterLike(request);
+				}
+
+				case '/twitter-reply': {
+					try {
+						return await this.handleTwitterReply(request);
+					} catch (error) {
+						console.error('Twitter reply handler error:', error);
+						return new Response(JSON.stringify({
+							error: 'Failed to send reply',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+
+				case '/twitter-retweet': {
+					try {
+						return await this.handleTwitterRetweet(request);
+					} catch (error) {
+						console.error('Twitter retweet handler error:', error);
+						return new Response(JSON.stringify({
+							error: 'Failed to retweet',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+
+				case '/create-memory': {
+					return await this.handleCreateMemory(request);
+				}
+
+				case '/get-memories': {
+					return await this.handleGetMemories(request);
+				}
+
+				case '/get-memories-by-rooms': {
+					return await this.handleGetMemoriesByRooms(request);
+				}
+
+				case '/delete-character': {
+					const { author, name } = await request.json();
+					try {
+						await this.deleteCharacter(author, name);
+						return new Response(JSON.stringify({
+							success: true,
+							message: 'Character deleted successfully'
+						}), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+					} catch (error) {
+						console.error('Delete character error:', error);
+						return new Response(JSON.stringify({
+							error: 'Failed to delete character',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+				case '/get-character': {
+					try {
+						const { author, name, slug } = await request.json();
+						// Get character config
+						const character = await this.getCharacter(author, slug);
+
+						if (!character) {
+							return new Response(JSON.stringify({ error: 'Character not found' }), {
+								status: 404,
+								headers: { 'Content-Type': 'application/json' }
+							});
+						}
+
+						return new Response(JSON.stringify(character), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+					} catch (error) {
+						console.error('Get character error:', error);
+						return new Response(JSON.stringify({
+							error: 'Internal server error',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+				case '/get-featured-characters': {
+					try {
+						const { authors } = await request.json();
+						const characters = await this.getFeaturedCharacters(authors);
+						return new Response(JSON.stringify(characters), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+					} catch (error) {
+						console.error('Get featured characters error:', error);
+						return new Response(JSON.stringify({
+							error: 'Internal server error',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
+				case '/get-author-characters': {
+					const { author } = await request.json();
+					const characters = await this.getCharactersByAuthor(author);
 					return new Response(JSON.stringify(characters), {
 						headers: { 'Content-Type': 'application/json' }
 					});
-				} catch (error) {
-					console.error('Get featured characters error:', error);
-					return new Response(JSON.stringify({
-						error: 'Internal server error',
-						details: error.message
-					}), {
-						status: 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
 				}
-			}
-			case '/get-author-characters': {
-				const { author } = await request.json();
-				const characters = await this.getCharactersByAuthor(author);
-				return new Response(JSON.stringify(characters), {
-					headers: { 'Content-Type': 'application/json' }
-				});
-			}
-			case '/initialize-session': {
-				const { author, slug, personality, roomId } = await request.json();
+				case '/initialize-session': {
+					const { author, slug, personality, roomId } = await request.json();
 
-				if (!author || !slug || !roomId) {
-					return new Response(JSON.stringify({
-						error: 'Missing required fields'
-					}), {
-						status: 400,
-						headers: { 'Content-Type': 'application/json' }
-					});
-				}
+					if (!author || !slug || !roomId) {
+						return new Response(JSON.stringify({
+							error: 'Missing required fields'
+						}), {
+							status: 400,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
 
-				try {
-					const session = await this.initializeCharacterRoom(author, slug, roomId);
-					return new Response(JSON.stringify(session), {
-						headers: { 'Content-Type': 'application/json' }
-					});
-				} catch (error) {
-					console.error('Init Char Room Failure Session initialization error:', error);
-					return new Response(JSON.stringify({
-						error: 'Failed to initialize session',
-						details: error.message
-					}), {
-						status: 500,
-						headers: { 'Content-Type': 'application/json' }
-					});
+					try {
+						const session = await this.initializeCharacterRoom(author, slug, roomId);
+						return new Response(JSON.stringify(session), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+					} catch (error) {
+						console.error('Init Char Room Failure Session initialization error:', error);
+						return new Response(JSON.stringify({
+							error: 'Failed to initialize session',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
 				}
-			}
-			case '/handle-twitter-classify': {
-				return await this.handleTwitterClassify(request);
-			}
-			case '/handle-twitter-post-with-media': {
-				return await this.handleTwitterPostWithMedia(request);
-			}
-			case '/handle-delete-memory': {
-				return await this.handleDeleteMemory(request);
-			}
-			case '/handle-find-memory': {
-				return await this.handleFindMemory(request);
-			}
-			case '/handle-update-memory': {
-				return await this.handleUpdateMemory(request);
-			}
-			case '/handle-memory-list': {
-				return await this.handleMemoryList(request);
-			}
+				case '/handle-twitter-classify': {
+					return await this.handleTwitterClassify(request);
+				}
+				case '/handle-twitter-post-with-media': {
+					return await this.handleTwitterPostWithMedia(request);
+				}
+				case '/handle-delete-memory': {
+					return await this.handleDeleteMemory(request);
+				}
+				case '/handle-find-memory': {
+					return await this.handleFindMemory(request);
+				}
+				case '/handle-update-memory': {
+					return await this.handleUpdateMemory(request);
+				}
+				case '/handle-memory-list': {
+					return await this.handleMemoryList(request);
+				}
 			case '/memory-list': {
 				return this.handleInternalMemoryList(request);
 			}
 			case '/get-session': {
 				return await this.handleGetSession(request);
 			}
-			default:
-				return new Response('Not found', { status: 404 });
+				default:
+					return new Response('Not found', { status: 404 });
+		}
+	}
+
+	async handleTwitterPost(request) {
+		try {
+			const { userId, characterName, tweet, sessionId, roomId, nonce } = await request.json();
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
+
+			// Get secrets for auth
+			const secrets = await this.getCharacterSecrets(character.id);
+
+			// Import the TwitterClientInterface instead of Scraper directly
+			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+
+			// Create runtime settings object from secrets
+			const runtime = {
+				settings: {
+					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
+					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
+					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies),
+					TELEGRAM_BOT_TOKEN: secrets.modelKeys.telegram_token
+				}
+			};
+
+			// Initialize the Twitter client using the interface
+			const client = await TwitterClientInterface.start(runtime);
+
+			// Send the tweet
+			const result = await client.sendTweet(tweet);
+
+			// Create a memory for this tweet
+			const memory = {
+				content: tweet,
+				type: 'post-tweet',
+				agentId: character.id,
+				userId,
+				sessionId,
+				roomId,
+				createdAt: new Date().toISOString()
+			};
+
+			await this.runtime.databaseAdapter.createMemory(memory);
+
+			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
+
+			return new Response(JSON.stringify({
+				success: true,
+				tweet: result,
+				nonce: newNonce.nonce
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+
+		} catch (error) {
+			console.error('Internal Twitter post error:', error);
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
 		}
 	}
 }

@@ -54,10 +54,14 @@ export default {
 			}));
 
 			const result = await response.json();
-			return result.valid;
+			const responseData = {
+				username: result.username,
+				success: result.valid
+			}
+			return responseData;
 		} catch (error) {
 			console.error('API key verification error:', error);
-			return false;
+			return { success: false, username: null };
 		}
 	},
 
@@ -120,7 +124,8 @@ export default {
 		}
 
 		// If not admin key, verify against user API keys
-		return await this.verifyApiKey(authToken, env);
+		const authResult = await this.verifyApiKey(authToken, env);
+		return authResult.success;
 	},
 
 	// Handle Create User
@@ -2361,80 +2366,157 @@ export default {
 	},
 	async handleDeleteMemory(request, env) {
 		try {
-		  const { sessionId, memoryId } = await request.json();
-		  
-		  if (!sessionId || !memoryId) {
-			return new Response(JSON.stringify({
-			  error: 'Missing required fields'
-			}), {
-			  status: 400,
-			  headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+			// get api key from header
+			const authHeader = request.headers.get('Authorization');
+			if (!authHeader) {
+				return new Response(JSON.stringify({
+					error: 'Missing Authorization header'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				});
+			}
+			const [, apiKey] = authHeader.split(' ');
+			
+			// get the user from the api key
+			const authResult = await this.verifyApiKey(apiKey, env);
+			console.log('[handleDeleteMemory] Auth result:', authResult);
+			if (!authResult.success) {
+				return new Response(JSON.stringify({
+					error: 'Invalid API key'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				});
+			}
+
+			const { sessionId, memoryId } = await request.json();
+			
+			if (!sessionId || !memoryId) {
+				return new Response(JSON.stringify({
+					error: 'Missing required fields'
+				}), {
+					status: 400,
+					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				});
+			}
+		
+			const id = env.CHARACTER_REGISTRY.idFromName("global");
+			const registry = env.CHARACTER_REGISTRY.get(id);
+		
+			const response = await registry.fetch(new Request('http://internal/handle-delete-memory', {
+				method: 'POST',
+				body: JSON.stringify({ 
+					sessionId, 
+					memoryId,
+					username: authResult.username
+				})
+			}));
+		
+			return new Response(await response.text(), {
+				status: response.status,
+				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
 			});
-		  }
-	  
-		  const id = env.CHARACTER_REGISTRY.idFromName("global");
-		  const registry = env.CHARACTER_REGISTRY.get(id);
-	  
-		  const response = await registry.fetch(new Request('http://internal/delete-memory', {
-			method: 'POST',
-			body: JSON.stringify({ sessionId, memoryId })
-		  }));
-	  
-		  return new Response(await response.text(), {
-			status: response.status,
-			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-		  });
 		} catch (error) {
-		  console.error('Delete memory error:', error);
-		  return new Response(JSON.stringify({
-			error: 'Internal server error',
-			details: error.message
-		  }), {
-			status: 500,
-			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-		  });
-		}
-	  },
-	  
-	  async handleFindMemory(request, env) {
-		try {
-		  const { sessionId, query } = await request.json();
-		  
-		  if (!sessionId || !query) {
+			console.error('Delete memory error:', error);
 			return new Response(JSON.stringify({
-			  error: 'Missing required fields'
+				error: 'Internal server error',
+				details: error.message
 			}), {
-			  status: 400,
-			  headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				status: 500,
+				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
 			});
-		  }
-	  
-		  const id = env.CHARACTER_REGISTRY.idFromName("global");
-		  const registry = env.CHARACTER_REGISTRY.get(id);
-	  
-		  const response = await registry.fetch(new Request('http://internal/find-memory', {
-			method: 'POST',
-			body: JSON.stringify({ sessionId, query })
-		  }));
-	  
-		  return new Response(await response.text(), {
-			status: response.status,
-			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-		  });
-		} catch (error) {
-		  console.error('Find memory error:', error);
-		  return new Response(JSON.stringify({
-			error: 'Internal server error',
-			details: error.message
-		  }), {
-			status: 500,
-			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-		  });
 		}
-	  },
-	  
-	  async handleUpdateMemory(request, env) {
+	},
+	async handleFindMemory(request, env) {
 		try {
+			const { sessionId, query, agentId } = await request.json();
+			
+			if (!sessionId || !query ) {
+				return new Response(JSON.stringify({
+					error: 'Missing required fields'
+				}), {
+					status: 400,
+					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				});
+			}
+			// get api key from header
+			const authHeader = request.headers.get('Authorization');
+			if (!authHeader) {
+				return new Response(JSON.stringify({
+					error: 'Missing Authorization header'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				});
+			}
+			const [, apiKey] = authHeader.split(' ');
+			// get the user from the api key
+			const authResult = await this.verifyApiKey(apiKey, env);
+			console.log('[handleFindMemory] Auth result:', authResult);
+			if (!authResult.success) {
+				return new Response(JSON.stringify({
+					error: 'Invalid API key'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				});
+			}
+	
+			const id = env.CHARACTER_REGISTRY.idFromName("global");
+			const registry = env.CHARACTER_REGISTRY.get(id);
+	
+			const response = await registry.fetch(new Request('http://internal/handle-find-memory', {
+				method: 'POST',
+				body: JSON.stringify({ 
+					sessionId, 
+					query,
+					agentId, 
+					username: authResult.username 
+				})
+			}));
+	
+			return new Response(await response.text(), {
+				status: response.status,
+				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+			});
+		} catch (error) {
+			console.error('Find memory error:', error);
+			return new Response(JSON.stringify({
+				error: 'Internal server error',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+			});
+		}
+	},
+	async handleUpdateMemory(request, env) {
+		try {
+			// get api key from header
+			const authHeader = request.headers.get('Authorization');
+			if (!authHeader) {
+				return new Response(JSON.stringify({
+					error: 'Missing Authorization header'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				});
+			}
+			const [, apiKey] = authHeader.split(' ');
+			
+			// get the user from the api key
+			const authResult = await this.verifyApiKey(apiKey, env);
+			console.log('[handleUpdateMemory] Auth result:', authResult);
+			if (!authResult.success) {
+				return new Response(JSON.stringify({
+					error: 'Invalid API key'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				});
+			}
+
 			const { sessionId, memoryId, content, type, userId, importance_score = 0, metadata = {} } = await request.json();
 			console.log('[handleUpdateMemory] Request params:', { 
 				sessionId, 
@@ -2456,7 +2538,8 @@ export default {
 					content,
 					importance_score,
 					type, 
-					userId 
+					userId,
+					username: authResult.username // Pass authenticated username
 				})
 			}));
 
@@ -2480,76 +2563,103 @@ export default {
 				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
 			});
 		}
-	  },
-	  
-	  async handleMemoryList(request, env) {
+	},
+	async handleMemoryList(request, env) {
 		try {
-		  let sessionId, type, slug;
-		  
-		  if (request.method === 'GET') {
-			const url = new URL(request.url);
-			sessionId = url.searchParams.get('sessionId');
-			slug = url.searchParams.get('slug');
-			type = url.searchParams.get('type');
-		  } else if (request.method === 'POST') {
-			const body = await request.json();
-			sessionId = body.sessionId;
-			slug = body.slug;
-			type = body.type;
-		  } else {
-			return new Response(JSON.stringify({
-			  error: 'Method not allowed'
-			}), {
-			  status: 405,
-			  headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+			let sessionId, type, slug;
+			
+			// get api key from header
+			const authHeader = request.headers.get('Authorization');
+			if (!authHeader) {
+				return new Response(JSON.stringify({
+					error: 'Missing Authorization header'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				});
+			}
+			const [, apiKey] = authHeader.split(' ');
+			
+			// get the user from the api key
+			const authResult = await this.verifyApiKey(apiKey, env);
+			console.log('[handleMemoryList] Auth result:', authResult);
+			if (!authResult.success) {
+				return new Response(JSON.stringify({
+					error: 'Invalid API key'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				});
+			}
+			
+			if (request.method === 'GET') {
+				const url = new URL(request.url);
+				sessionId = url.searchParams.get('sessionId');
+				slug = url.searchParams.get('slug');
+				type = url.searchParams.get('type');
+			} else if (request.method === 'POST') {
+				const body = await request.json();
+				sessionId = body.sessionId;
+				slug = body.slug;
+				type = body.type;
+			} else {
+				return new Response(JSON.stringify({
+					error: 'Method not allowed'
+				}), {
+					status: 405,
+					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				});
+			}
+
+			console.log('[handleMemoryList] Request params:', { sessionId, type, slug, method: request.method });
+
+			if (!sessionId) {
+				return new Response(JSON.stringify({
+					error: 'Missing sessionId parameter'
+				}), {
+					status: 400,
+					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+				});
+			}
+
+			const id = env.CHARACTER_REGISTRY.idFromName("global");
+			const registry = env.CHARACTER_REGISTRY.get(id);
+	
+			const response = await registry.fetch(new Request('http://internal/handle-memory-list', {
+				method: 'POST',
+				body: JSON.stringify({ 
+					slug, 
+					sessionId, 
+					type,
+					username: authResult.username // Pass authenticated username
+				})
+			}));
+
+			const responseText = await response.text();
+			console.log('[handleMemoryList] Response:', { 
+				status: response.status,
+				headers: Object.fromEntries(response.headers),
+				body: responseText.slice(0, 200) + '...'
 			});
-		  }
-
-		  console.log('[handleMemoryList] Request params:', { sessionId, type, slug, method: request.method });
-
-		  if (!sessionId) {
-			return new Response(JSON.stringify({
-			  error: 'Missing sessionId parameter'
-			}), {
-			  status: 400,
-			  headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+	
+			return new Response(responseText, {
+				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
 			});
-		  }
-
-		  const id = env.CHARACTER_REGISTRY.idFromName("global");
-		  const registry = env.CHARACTER_REGISTRY.get(id);
-	  
-		  const response = await registry.fetch(new Request('http://internal/handle-memory-list', {
-			method: 'POST',
-			body: JSON.stringify({ slug, sessionId, type })
-		  }));
-
-		  const responseText = await response.text();
-		  console.log('[handleMemoryList] Response:', { 
-			status: response.status,
-			headers: Object.fromEntries(response.headers),
-			body: responseText.slice(0, 200) + '...'
-		  });
-	  
-		  return new Response(responseText, {
-			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-		  });
 		} catch (error) {
-		  console.error('[handleMemoryList] Error:', {
-			message: error.message,
-			stack: error.stack,
-			type: error.constructor.name
-		  });
-		  return new Response(JSON.stringify({
-			error: 'Internal server error',
-			details: error.message
-		  }), {
-			status: 500,
-			headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
-		  });
+			console.error('[handleMemoryList] Error:', {
+				message: error.message,
+				stack: error.stack,
+				type: error.constructor.name
+			});
+			return new Response(JSON.stringify({
+				error: 'Internal server error',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+			});
 		}
-	  },
-	  
+	},
 	async fetch(request, env) {
 		const url = new URL(request.url);
 		const path = url.pathname;

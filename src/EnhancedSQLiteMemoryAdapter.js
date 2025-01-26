@@ -155,14 +155,26 @@ export class EnhancedSQLiteMemoryAdapter extends SQLiteMemoryAdapter {
 	}
 
 	// Override createMemory to add importance scoring
-	async createMemory({ id, type = 'message', content, userId, userName, roomId, agentId, isUnique = false }) {
+	async createMemory({ id, type = 'message', content, userId, userName, roomId, agentId, isUnique = false, messageAction = null }) {
 		try {
 		  if (!roomId) {
 			return false;
 		  }
-	  
+		  if(roomId && roomId === 'post-tweet') {
+			type = 'post-tweet';
+		  }
+
+		  if(roomId && roomId === 'reply-tweet') {
+			type = 'reply-tweet';
+		  }
+
+		  if(roomId && roomId === 'tweet-prompt') {
+			type = 'tweet-prompt';
+		  }
+
 		  const importanceScore = await this.calculateImportanceScore(content);
-		  
+
+
 		  const enhancedMemory = {
 			id: id || crypto.randomUUID(),
 			type,
@@ -249,46 +261,134 @@ export class EnhancedSQLiteMemoryAdapter extends SQLiteMemoryAdapter {
 
 	async deleteMemory(memoryId) {
 		try {
+			console.log('[EnhancedSQLiteMemoryAdapter.deleteMemory] Deleting memory:', { memoryId });
+			
 			await this.sql.exec(`
 				DELETE FROM memories 
 				WHERE id = ?
 			`, memoryId);
 			
-			// Remove from cache
-			this.memories.delete(memoryId);
-			return true;
+			// Check if any rows were affected
+			const changes = await this.sql.exec('SELECT changes() as count').toArray();
+			const success = changes[0].count > 0;
+			
+			console.log('[EnhancedSQLiteMemoryAdapter.deleteMemory] Delete result:', {
+				success,
+				changes: changes[0].count
+			});
+
+			if (success) {
+				// Remove from cache only if delete was successful
+				this.memories.delete(memoryId);
+			}
+			
+			return success;
 		} catch (error) {
-			console.error('Error deleting memory:', error);
+			console.error('[EnhancedSQLiteMemoryAdapter.deleteMemory] Error:', {
+				message: error.message,
+				stack: error.stack
+			});
 			return false;
 		}
 	}
 
 	async findMemories(query, options = {}) {
 		try {
-			const { limit = 10, type = null } = options;
-			
-			// First try exact content match
-			let memories = await this.sql.exec(`
-				SELECT * FROM memories 
-				WHERE content LIKE ?
-				${type ? 'AND type = ?' : ''}
-				ORDER BY createdAt DESC
-				LIMIT ?
-			`, `%${query}%`, ...(type ? [type] : []), limit).toArray();
+			const { limit = 10, type = null, agentId, userId } = options;
+			console.log('[findMemories] Starting search with:', { query, agentId, userId, type, limit });
+        
+			if (!agentId) {
+				console.error('[findMemories] Missing required agentId parameter');
+				return [];
+			}
 
-			// If we have embeddings, also try semantic search
-			if (memories.length < limit && this.searchMemoriesByEmbedding) {
-				const embedding = await this.createEmbedding(query);
-				if (embedding) {
-					const semanticResults = await this.searchMemoriesByEmbedding(embedding, {
-						limit: limit - memories.length,
-						type
-					});
-					memories = [...memories, ...semanticResults];
+			// First get the character ID from the slug
+			const characters = await this.sql.exec('SELECT id FROM characters WHERE slug = ? LIMIT 1', agentId).toArray();
+			if (!characters.length) {
+				console.error('[findMemories] No character found with slug:', agentId);
+				return [];
+			}
+			const characterId = characters[0].id + '.0';  // Add .0 to match database format
+
+			// Debug: Get all memories for this character first
+			const allMemories = await this.sql.exec(`
+				SELECT * FROM memories 
+				WHERE agentId = ?
+				ORDER BY createdAt DESC
+			`, characterId).toArray();
+
+			console.log('[findMemories] All memories for character:', {
+				agentId: characterId,
+				count: allMemories.length,
+				memories: allMemories.map(m => ({
+					id: m.id,
+					type: m.type,
+					agentId: m.agentId,
+					content: m.content.substring(0, 100)
+				}))
+			});
+
+			let conditions = [
+				'agentId = ?',
+				"json_extract(content, '$.text') LIKE ?"
+			];
+			let sqlParams = [characterId, `%${query}%`];
+			
+			if (type) {
+				conditions.push('type = ?');
+				sqlParams.push(type);
+			}
+			
+			if (userId) {
+				conditions.push('(userId = ? OR userId IS NULL)');  // Make userId optional
+				sqlParams.push(userId);
+			}
+			
+			sqlParams.push(limit);
+			
+			const sqlQuery = `
+				SELECT * FROM memories 
+				WHERE ${conditions.join(' AND ')}
+				ORDER BY createdAt DESC
+				LIMIT ?`;
+			
+			console.log('[findMemories] Executing query:', {
+				sql: sqlQuery,
+				params: sqlParams,
+				conditions
+			});
+			
+			let memories = await this.sql.exec(sqlQuery, ...sqlParams).toArray();
+			console.log('[findMemories] Raw query results:', {
+				count: memories.length,
+				firstResult: memories[0] ? {
+					id: memories[0].id,
+					type: memories[0].type,
+					agentId: memories[0].agentId,
+					contentPreview: memories[0].content.substring(0, 100)
+				} : null
+			});
+
+			// Only attempt semantic search if the method exists and we have capacity for more results
+			if (memories.length < limit && 
+				typeof this.searchMemoriesByEmbedding === 'function' && 
+				typeof this.createEmbedding === 'function') {
+				try {
+					const embedding = await this.createEmbedding(query);
+					if (embedding) {
+						const semanticResults = await this.searchMemoriesByEmbedding(embedding, {
+							limit: limit - memories.length,
+							type,
+							agentId
+						});
+						memories = [...memories, ...semanticResults];
+					}
+				} catch (semanticError) {
+					console.warn('[findMemories] Semantic search failed:', semanticError.message);
 				}
 			}
 
-			return memories.map(m => ({
+			const processedMemories = memories.map(m => ({
 				id: m.id,
 				type: m.type,
 				content: JSON.parse(m.content),
@@ -300,8 +400,22 @@ export class EnhancedSQLiteMemoryAdapter extends SQLiteMemoryAdapter {
 				importance_score: m.importance_score,
 				metadata: m.metadata ? JSON.parse(m.metadata) : null
 			}));
+
+			console.log('[findMemories] Final processed results:', {
+				count: processedMemories.length,
+				firstResult: processedMemories[0] ? {
+					id: processedMemories[0].id,
+					type: processedMemories[0].type,
+					agentId: processedMemories[0].agentId
+				} : null
+			});
+
+			return processedMemories;
 		} catch (error) {
-			console.error('Error finding memories:', error);
+			console.error('[findMemories] Error:', {
+				message: error.message,
+				stack: error.stack
+			});
 			return [];
 		}
 	}
@@ -435,18 +549,53 @@ export class EnhancedSQLiteMemoryAdapter extends SQLiteMemoryAdapter {
 				}))
 			});
 
-			const result = memories.map(m => ({
-				id: m.id,
-				type: m.type,
-				content: JSON.parse(m.content),
-				userId: m.userId,
-				roomId: m.roomId,
-				agentId: m.agentId,
-				createdAt: parseInt(m.createdAt),
-				isUnique: Boolean(m.isUnique),
-				importance_score: m.importance_score,
-				metadata: m.metadata ? JSON.parse(m.metadata) : null
-			}));
+			const result = memories.map(m => {
+				try {
+					let parsedContent;
+					try {
+						parsedContent = JSON.parse(m.content);
+					} catch (parseError) {
+						console.warn('[getAllMemoriesByCharacter] Failed to parse content:', {
+							id: m.id,
+							error: parseError.message,
+							content: m.content?.substring(0, 100)
+						});
+						// If JSON parsing fails, return the raw content
+						parsedContent = { text: m.content };
+					}
+
+					let parsedMetadata = null;
+					try {
+						if (m.metadata) {
+							parsedMetadata = JSON.parse(m.metadata);
+						}
+					} catch (metadataError) {
+						console.warn('[getAllMemoriesByCharacter] Failed to parse metadata:', {
+							id: m.id,
+							error: metadataError.message
+						});
+					}
+
+					return {
+						id: m.id,
+						type: m.type,
+						content: parsedContent,
+						userId: m.userId,
+						roomId: m.roomId,
+						agentId: m.agentId,
+						createdAt: parseInt(m.createdAt),
+						isUnique: Boolean(m.isUnique),
+						importance_score: m.importance_score,
+						metadata: parsedMetadata
+					};
+				} catch (memoryError) {
+					console.error('[getAllMemoriesByCharacter] Failed to process memory:', {
+						id: m.id,
+						error: memoryError.message
+					});
+					return null;
+				}
+			}).filter(Boolean); // Remove any null entries from failed processing
 
 			console.log('[getAllMemoriesByCharacter] Processed results:', {
 				totalCount: result.length,

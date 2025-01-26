@@ -60,35 +60,6 @@ export class SQLiteMemoryAdapter {
 		}
 	}
 
-
-
-	// async createMemory(memory) {
-	// 	try {
-	// 		await this.sql.exec(`
-	// 		INSERT INTO memories (
-	// 		  id,
-	// 		  content,
-	// 		  userId,
-	// 		  roomId,
-	// 		  agentId,
-	// 		  createdAt,
-	// 		  type
-	// 		) VALUES (?, ?, ?, ?, ?, ?, ?)
-	// 	  `,
-	// 			memory.id,
-	// 			JSON.stringify(memory.content),
-	// 			memory.userId,
-	// 			memory.roomId,
-	// 			memory.agentId,
-	// 			memory.createdAt,
-	// 			memory.type || 'message'
-	// 		);
-	// 		return true;
-	// 	} catch (error) {
-	// 		console.error('Error creating memory:', error);
-	// 		return false;
-	// 	}
-	// }
 	async cleanCharacterData(characterData) {
 		// Ensure core arrays are initialized and filtered
 		const cleanedCharacter = {
@@ -180,12 +151,12 @@ export class SQLiteMemoryAdapter {
 				console.error('Missing required roomId for memory creation');
 				return false;
 			}
-	
+
 			// Check if room exists first
 			const roomExists = await this.sql.exec(`
 				SELECT id FROM rooms WHERE id = ? LIMIT 1
 			`, roomId).toArray();
-	
+
 			if (!roomExists.length) {
 				// Create room if it doesn't exist
 				await this.sql.exec(`
@@ -197,19 +168,33 @@ export class SQLiteMemoryAdapter {
 					) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
 				`, roomId, agentId);
 			}
-	
+
 			const createdAt = Date.now();
+			
+			// Handle content format
+			let formattedContent;
+			if (typeof content === 'string') {
+				// If it's a string, wrap it in a text object
+				formattedContent = JSON.stringify({ text: content });
+			} else if (typeof content === 'object') {
+				// If it's already an object, stringify it
+				formattedContent = JSON.stringify(content);
+			} else {
+				// For any other type, convert to string and wrap in text object
+				formattedContent = JSON.stringify({ text: String(content) });
+			}
+
 			const memory = {
 				id: id || crypto.randomUUID(),
 				type,
-				content: typeof content === 'string' ? content : JSON.stringify(content),
+				content: formattedContent,
 				userId,
 				roomId,
 				agentId,
 				createdAt,
 				isUnique: isUnique ? 1 : 0
 			};
-	
+
 			await this.sql.exec(`
 				INSERT INTO memories (
 					id,
@@ -231,9 +216,12 @@ export class SQLiteMemoryAdapter {
 				memory.createdAt,
 				memory.isUnique
 			);
-	
+
 			// Store in memory cache
-			this.memories.set(memory.id, memory);
+			this.memories.set(memory.id, {
+				...memory,
+				content: JSON.parse(memory.content)  // Parse it back for the cache
+			});
 			return true;
 		} catch (error) {
 			console.error('Error creating memory:', error);
@@ -260,22 +248,105 @@ export class SQLiteMemoryAdapter {
 			}
 
 			const memory = memories[0];
+			console.log('[getMemoryById] Raw memory data:', {
+				id: memory.id,
+				type: memory.type,
+				contentType: typeof memory.content,
+				contentPreview: memory.content?.substring(0, 100),
+				contentLength: memory.content?.length
+			});
+
+			let parsedContent;
+			try {
+				// First try to parse as JSON
+				if (typeof memory.content === 'string') {
+					try {
+						parsedContent = JSON.parse(memory.content);
+						console.log('[getMemoryById] Successfully parsed content as JSON:', {
+							id: memory.id,
+							contentType: typeof parsedContent,
+							hasText: 'text' in parsedContent,
+							keys: Object.keys(parsedContent)
+						});
+					} catch (firstParseError) {
+						// If first parse fails, check if it's a double-stringified JSON
+						try {
+							parsedContent = JSON.parse(JSON.parse(memory.content));
+							console.log('[getMemoryById] Successfully parsed double-stringified JSON:', {
+								id: memory.id,
+								contentType: typeof parsedContent,
+								hasText: 'text' in parsedContent,
+								keys: Object.keys(parsedContent)
+							});
+						} catch (secondParseError) {
+							// If both parses fail, treat as plain text
+							console.log('[getMemoryById] Content appears to be plain text:', {
+								id: memory.id,
+								parseError: firstParseError.message,
+								content: memory.content?.substring(0, 100)
+							});
+							parsedContent = { text: memory.content };
+						}
+					}
+				} else {
+					parsedContent = memory.content;
+				}
+			} catch (parseError) {
+				console.warn('[getMemoryById] Failed to parse content:', {
+					id: memory.id,
+					error: parseError.message,
+					content: memory.content?.substring(0, 100)
+				});
+				// If all parsing fails, wrap in text object
+				parsedContent = { text: memory.content };
+			}
+
+			let parsedMetadata = null;
+			try {
+				if (memory.metadata) {
+					console.log('[getMemoryById] Raw metadata:', {
+						id: memory.id,
+						metadataType: typeof memory.metadata,
+						metadataPreview: memory.metadata?.substring(0, 100)
+					});
+					parsedMetadata = JSON.parse(memory.metadata);
+				}
+			} catch (metadataError) {
+				console.warn('[getMemoryById] Failed to parse metadata:', {
+					id: memory.id,
+					error: metadataError.message
+				});
+			}
+
 			const formatted = {
 				id: memory.id,
 				type: memory.type || 'message',
-				content: typeof memory.content === 'string' ? JSON.parse(memory.content) : memory.content,
+				content: parsedContent,
 				userId: memory.userId,
 				roomId: memory.roomId,
 				agentId: memory.agentId,
 				createdAt: parseInt(memory.createdAt),
-				isUnique: Boolean(memory.isUnique)
+				isUnique: Boolean(memory.isUnique),
+				importance_score: memory.importance_score,
+				metadata: parsedMetadata
 			};
+
+			console.log('[getMemoryById] Final formatted memory:', {
+				id: formatted.id,
+				type: formatted.type,
+				contentType: typeof formatted.content,
+				hasText: 'text' in formatted.content,
+				keys: Object.keys(formatted.content)
+			});
 
 			// Store in cache
 			this.memories.set(id, formatted);
 			return formatted;
 		} catch (error) {
-			console.error('Error getting memory by ID:', error);
+			console.error('[getMemoryById] Error:', {
+				message: error.message,
+				stack: error.stack
+			});
 			return null;
 		}
 	}
@@ -486,7 +557,6 @@ export class SQLiteMemoryAdapter {
 		return true;
 	}
 
-
 	async searchMemoriesByEmbedding(embedding, options = {}) {
 		// Simple implementation without vector search
 		return [];
@@ -559,6 +629,119 @@ export class SQLiteMemoryAdapter {
 		return [];
 	}
 
+	async getAllMemoriesByCharacter(characterId, options = {}) {
+		try {
+			const { limit = 100, type = null } = options;
+			console.log('[getAllMemoriesByCharacter] Input:', { characterId, options });
+
+			// First get all unique rooms for this character
+			const roomsQuery = 'SELECT DISTINCT roomId FROM memories WHERE agentId = ?';
+			const rooms = await this.sql.exec(roomsQuery, characterId).toArray();
+			console.log('[getAllMemoriesByCharacter] Found rooms:', rooms.map(r => r.roomId));
+
+			const query = `
+				SELECT * FROM memories 
+				WHERE agentId = ?
+				${type ? 'AND type = ?' : ''}
+				ORDER BY createdAt DESC
+				LIMIT ?
+			`;
+
+			const params = [characterId];
+			if (type) params.push(type);
+			params.push(limit);
+
+			console.log('[getAllMemoriesByCharacter] Query:', {
+				sql: query,
+				params,
+				paramTypes: params.map(p => typeof p)
+			});
+
+			const memories = await this.sql.exec(query, ...params).toArray();
+			console.log('[getAllMemoriesByCharacter] Found memories:', {
+				count: memories.length,
+				firstFew: memories.slice(0, 3).map(m => ({
+					id: m.id,
+					type: m.type,
+					roomId: m.roomId,
+					createdAt: m.createdAt
+				}))
+			});
+
+			const result = memories.map(m => {
+				console.log('[getAllMemoriesByCharacter] Processing memory:', {
+					id: m.id,
+					type: m.type,
+					contentType: typeof m.content,
+					contentPreview: m.content?.substring(0, 100)
+				});
+
+				let parsedContent;
+				try {
+					// First check if content is already an object
+					if (typeof m.content === 'object' && m.content !== null) {
+						parsedContent = m.content;
+					} else if (typeof m.content === 'string') {
+						// Try to parse as JSON first
+						try {
+							parsedContent = JSON.parse(m.content);
+							console.log('[getAllMemoriesByCharacter] Parsed JSON content:', {
+								id: m.id,
+								contentType: typeof parsedContent,
+								hasText: 'text' in parsedContent,
+								keys: Object.keys(parsedContent)
+							});
+						} catch (parseError) {
+							// If parsing fails, treat as plain text
+							console.log('[getAllMemoriesByCharacter] Content is plain text:', {
+								id: m.id,
+								content: m.content?.substring(0, 100)
+							});
+							parsedContent = { text: m.content };
+						}
+					} else {
+						// For any other type, convert to string and wrap
+						parsedContent = { text: String(m.content) };
+					}
+
+					return {
+						id: m.id,
+						type: m.type || 'message',
+						content: parsedContent,
+						userId: m.userId,
+						roomId: m.roomId,
+						agentId: m.agentId,
+						createdAt: parseInt(m.createdAt),
+						isUnique: Boolean(m.isUnique),
+						importance_score: m.importance_score,
+						metadata: m.metadata ? JSON.parse(m.metadata) : null
+					};
+				} catch (error) {
+					console.error('[getAllMemoriesByCharacter] Failed to process memory:', {
+						id: m.id,
+						error: error.message,
+						content: m.content?.substring(0, 100)
+					});
+					return null;
+				}
+			}).filter(Boolean); // Remove any null entries from failed processing
+
+			console.log('[getAllMemoriesByCharacter] Processed results:', {
+				totalCount: result.length,
+				uniqueRooms: [...new Set(result.map(m => m.roomId))],
+				uniqueTypes: [...new Set(result.map(m => m.type))]
+			});
+
+			return result;
+		} catch (error) {
+			console.error('[getAllMemoriesByCharacter] Error:', {
+				message: error.message,
+				stack: error.stack,
+				type: error.constructor.name
+			});
+			return [];
+		}
+	}
 }
 
 export default SQLiteMemoryAdapter;
