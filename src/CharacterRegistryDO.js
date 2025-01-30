@@ -3028,7 +3028,210 @@ export class CharacterRegistryDO {
 			});
 		}
 	}
+	async handleInternalTwitterPost(request) {
+		try {
+			const { userId, characterName, tweet, sessionId, roomId, nonce } = await request.json();
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
 
+			// Get secrets for auth
+			const secrets = await this.getCharacterSecrets(character.id);
+
+			// Import the TwitterClientInterface instead of Scraper directly
+			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+
+			// Create runtime settings object from secrets
+			const runtime = {
+				settings: {
+					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
+					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
+					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies),
+					TELEGRAM_BOT_TOKEN: secrets.modelKeys.telegram_token
+				}
+			};
+
+			// Initialize the Twitter client using the interface
+			const client = await TwitterClientInterface.start(runtime);
+
+			// Send the tweet
+			const result = await client.sendTweet(tweet);
+
+			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
+
+			return new Response(JSON.stringify({
+				success: true,
+				tweet: result,
+				nonce: newNonce.nonce
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+
+		} catch (error) {
+			console.error('Internal Twitter post error:', error);
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
+	}
+
+	async handleTwitterReply(request) {
+		try {
+			const { userId, characterName, tweetId, replyText, sessionId, roomId, nonce } = await request.json();
+			const slug = characterName;
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
+
+			// Get secrets for auth
+			const secrets = await this.getCharacterSecrets(character.id);
+
+			// Import the TwitterClientInterface
+			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+
+			// Create runtime settings object from secrets
+			const runtime = {
+				settings: {
+					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
+					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
+					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies),
+					TELEGRAM_BOT_TOKEN: secrets.modelKeys.telegram_token
+				}
+			};
+
+			// Initialize the Twitter client using the interface
+			const client = await TwitterClientInterface.start(runtime);
+
+			// Send the reply using the existing sendTweet method with replyToId
+			const result = await client.sendTweet(replyText, tweetId);
+
+			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
+
+			return new Response(JSON.stringify({
+				success: true,
+				tweet: result,
+				nonce: newNonce.nonce
+			}), {
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+
+		} catch (error) {
+			console.error('Twitter reply handler error:', error);
+			return new Response(JSON.stringify({
+				error: error.message,
+				details: error.stack
+			}), {
+				status: error.message.includes('not found') ? 404 : 500,
+				headers: {
+					...CORS_HEADERS,
+					'Content-Type': 'application/json'
+				}
+			});
+		}
+	}
+
+	async handleTwitterRetweet(request) {
+		try {
+			const { userId, characterName, tweetId, quoteText } = await request.json();
+
+			// Get character
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
+
+			// Get secrets and initialize client
+			const secrets = await this.getCharacterSecrets(character.id);
+			const { TwitterClientInterface } = await import('./client-twitter/index.js');
+			const twitterClient = await TwitterClientInterface.start({
+				settings: {
+					TWITTER_USERNAME: secrets.modelKeys.twitter_username,
+					TWITTER_PASSWORD: secrets.modelKeys.twitter_password,
+					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
+					TWITTER_COOKIES: secrets.modelKeys.twitter_cookies,
+					TWITTER_DRY_RUN: 'true'
+				}
+			});
+
+			const result = await twitterClient.retweet(tweetId, quoteText);
+
+			return new Response(JSON.stringify(result), {
+				headers: { ...CORS_HEADERS }
+			});
+		} catch (error) {
+			console.error('Twitter retweet error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to retweet',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	}
+
+	async handleTwitterLike(request) {
+		try {
+			const { characterId, tweetId } = await request.json();
+
+			// Get character secrets/credentials
+			const secrets = await this.getCharacterSecrets(characterId);
+			if (!secrets?.modelKeys?.twitter_cookies) {
+				throw new Error('Twitter credentials not found');
+			}
+
+			const cookies = secrets.modelKeys.twitter_cookies;
+			const cookieString = cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
+			const csrfToken = cookies.find(c => c.name === 'ct0')?.value;
+
+			// Call Twitter's like endpoint
+			const likeResponse = await fetch('https://api.twitter.com/1.1/favorites/create.json', {
+				method: 'POST',
+				headers: {
+					'authorization': `Bearer ${this.env.TWITTER_BEARER_TOKEN}`,
+					'cookie': cookieString,
+					'content-type': 'application/x-www-form-urlencoded',
+					'x-csrf-token': csrfToken
+				},
+				body: `id=${tweetId}`
+			});
+
+			if (!likeResponse.ok) {
+				throw new Error(`Failed to like tweet: ${await likeResponse.text()}`);
+			}
+
+			return new Response(JSON.stringify({ success: true }), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+
+		} catch (error) {
+			console.error('Twitter like handler error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to like tweet',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
 
 	async fetch(request) {
 		if (request.method === "GET") {
