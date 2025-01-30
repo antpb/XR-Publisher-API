@@ -177,59 +177,142 @@ export default {
 				return;
 			}
 
-			let visits = new Map();
-			let cursor = undefined;
+			// Process visit queues
+			await this.processVisitQueues(env);
 
-			// Process visit queues from KV storage
-			do {
-				const result = await env.VISIT_COUNTS.list({
-					cursor,
-					prefix: 'queue:'
-				});
-
-				if (!result) break;
-				cursor = result.cursor;
-
-				for (const key of result.keys || []) {
-					if (!key?.name) continue;
-
-					const parts = key.name.split(':');
-					if (parts.length < 4) continue;
-
-					const author = parts[2];
-					const slug = parts[3];
-					const worldKey = `${author}:${slug}`;
-
-					visits.set(
-						worldKey,
-						(visits.get(worldKey) || 0) + 1
-					);
-
-					// Delete the processed key
-					await env.VISIT_COUNTS.delete(key.name)
-						.catch(err => console.error(`Error deleting key ${key.name}:`, err));
-				}
-			} while (cursor);
-
-			// Update DO if we have changes
-			if (visits.size > 0) {
-				const id = env.WORLD_REGISTRY.idFromName("global");
-				const registry = env.WORLD_REGISTRY.get(id);
-
-				await registry.fetch(new Request('http://internal/update-visit-counts', {
-					method: 'POST',
-					body: JSON.stringify({
-						visits: Array.from(visits)
-					})
-				}));
+			// Check if this is the daily backup cron (runs at midnight UTC)
+			if (controller.cron === "0 0 * * *") {
+				await this.handleDailyCharacterBackups(env);
 			}
 
 		} catch (error) {
-			console.error('Queue processing error:', error);
-			console.error('Environment state:', {
-				hasVisitCounts: !!env?.VISIT_COUNTS,
-				hasWorldRegistry: !!env?.WORLD_REGISTRY
+			console.error('Scheduled task error:', error);
+		}
+	},
+
+	async processVisitQueues(env) {
+		let visits = new Map();
+		let cursor = undefined;
+
+		do {
+			const result = await env.VISIT_COUNTS.list({
+				cursor,
+				prefix: 'queue:'
 			});
+
+			if (!result) break;
+			cursor = result.cursor;
+
+			for (const key of result.keys || []) {
+				if (!key?.name) continue;
+
+				const parts = key.name.split(':');
+				if (parts.length < 4) continue;
+
+				const author = parts[2];
+				const slug = parts[3];
+				const worldKey = `${author}:${slug}`;
+
+				visits.set(
+					worldKey,
+					(visits.get(worldKey) || 0) + 1
+				);
+
+				await env.VISIT_COUNTS.delete(key.name)
+					.catch(err => console.error(`Error deleting key ${key.name}:`, err));
+			}
+		} while (cursor);
+
+		if (visits.size > 0) {
+			const id = env.WORLD_REGISTRY.idFromName("global");
+			const registry = env.WORLD_REGISTRY.get(id);
+
+			await registry.fetch(new Request('http://internal/update-visit-counts', {
+				method: 'POST',
+				body: JSON.stringify({
+					visits: Array.from(visits)
+				})
+			}));
+		}
+	},
+
+	async handleDailyCharacterBackups(env) {
+		try {
+			// Get all characters from registry
+			const id = env.CHARACTER_REGISTRY.idFromName("global");
+			const registry = env.CHARACTER_REGISTRY.get(id);
+
+			// List all authors
+			const authorsList = await env.WORLD_BUCKET.list();
+			const authors = new Set();
+			for (const item of authorsList.objects) {
+				const parts = item.key.split('/');
+				if (parts.length > 1) {
+					authors.add(parts[0]);
+				}
+			}
+
+			const currentDate = new Date().toISOString().split('T')[0];
+			const oneWeekAgo = new Date();
+			oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+			const cutoffDate = oneWeekAgo.toISOString().split('T')[0];
+
+			// Process each author
+			for (const author of authors) {
+				// Get all characters for this author
+				const response = await registry.fetch(new Request('http://internal/get-author-characters', {
+					method: 'POST',
+					body: JSON.stringify({ author })
+				}));
+
+				if (!response.ok) continue;
+
+				const characters = await response.json();
+
+				// Export and backup each character
+				for (const character of characters) {
+					try {
+						// Export character data
+						const exportResponse = await registry.fetch(new Request('http://internal/export-character', {
+							method: 'POST',
+							body: JSON.stringify({
+								userId: author,
+								characterName: character.slug
+							})
+						}));
+
+						if (!exportResponse.ok) continue;
+
+						const exportData = await exportResponse.json();
+
+						// Store in backup bucket with date and encrypted filename
+						const backupKey = `${author}/${character.slug}/${currentDate}-${crypto.randomUUID()}.json`;
+						await env.CHARACTER_BACKUPS.put(backupKey, JSON.stringify(exportData), {
+							httpMetadata: {
+								contentType: 'application/json',
+								cacheControl: 'private, no-cache'
+							}
+						});
+
+						// Clean up old backups for this character
+						const oldBackups = await env.CHARACTER_BACKUPS.list({
+							prefix: `${author}/${character.slug}/`
+						});
+
+						for (const backup of oldBackups.objects) {
+							const backupDate = backup.key.split('/')[2].split('-')[0]; // Extract date from key
+							if (backupDate < cutoffDate) {
+								await env.CHARACTER_BACKUPS.delete(backup.key);
+							}
+						}
+					} catch (error) {
+						console.error(`Error backing up character ${character.slug}:`, error);
+						continue;
+					}
+				}
+			}
+		} catch (error) {
+			console.error('Character backup error:', error);
 		}
 	},
 
@@ -2661,6 +2744,299 @@ export default {
 			});
 		}
 	},
+	async handleCreateBackup(request, env) {
+		try {
+			const { userId, characterName } = await request.json();
+	
+			// Auth check
+			const authHeader = request.headers.get('Authorization');
+			if (!authHeader) {
+				return new Response(JSON.stringify({
+					error: 'Missing Authorization header'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+			const [, apiKey] = authHeader.split(' ');
+	
+			// Verify API key and username match
+			const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+			if (!isValid) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized: Invalid API key or username mismatch'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+	
+			// Get character data and create backup
+			const id = env.CHARACTER_REGISTRY.idFromName("global");
+			const registry = env.CHARACTER_REGISTRY.get(id);
+	
+			// Export character data
+			const exportResponse = await registry.fetch(new Request('http://internal/export-character', {
+				method: 'POST',
+				body: JSON.stringify({
+					userId,
+					characterName
+				})
+			}));
+	
+			if (!exportResponse.ok) {
+				throw new Error('Failed to export character data');
+			}
+	
+			const exportData = await exportResponse.json();
+			const timestamp = new Date().toISOString();
+			const backupKey = `${userId}/${characterName}/checkpoints/${timestamp}-${crypto.randomUUID()}.json`;
+	
+			// Store in backup bucket
+			await env.CHARACTER_BACKUPS.put(backupKey, JSON.stringify(exportData), {
+				httpMetadata: {
+					contentType: 'application/json',
+					cacheControl: 'private, no-cache'
+				}
+			});
+	
+			return new Response(JSON.stringify({
+				success: true,
+				message: 'Backup created successfully',
+				timestamp
+			}), {
+				status: 200,
+				headers: { ...CORS_HEADERS }
+			});
+	
+		} catch (error) {
+			console.error('Create backup error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to create backup',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	},
+	
+	async handleListBackups(request, env) {
+		try {
+			const url = new URL(request.url);
+			const userId = url.searchParams.get('userId');
+			const characterName = url.searchParams.get('characterName');
+	
+			if (!userId || !characterName) {
+				return new Response(JSON.stringify({
+					error: 'Missing required parameters'
+				}), {
+					status: 400,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+	
+			// Auth check
+			const authHeader = request.headers.get('Authorization');
+			if (!authHeader) {
+				return new Response(JSON.stringify({
+					error: 'Missing Authorization header'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+			const [, apiKey] = authHeader.split(' ');
+	
+			// Verify API key and username match
+			const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+			if (!isValid) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized: Invalid API key or username mismatch'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+	
+			// Get automatic backups
+			const autoBackups = await env.CHARACTER_BACKUPS.list({
+				prefix: `${userId}/${characterName}/`,
+				delimiter: '/'
+			});
+	
+			// Get checkpoint backups
+			const checkpointBackups = await env.CHARACTER_BACKUPS.list({
+				prefix: `${userId}/${characterName}/checkpoints/`
+			});
+	
+			// Format backup data
+			const backups = {
+				automatic: autoBackups.objects
+					.filter(obj => !obj.key.includes('/checkpoints/'))
+					.map(obj => ({
+						key: obj.key,
+						date: obj.key.split('/')[2].split('-')[0],
+						type: 'automatic',
+						uploaded: obj.uploaded
+					})),
+				checkpoints: checkpointBackups.objects.map(obj => ({
+					key: obj.key,
+					date: obj.key.split('/checkpoints/')[1].split('-')[0],
+					type: 'checkpoint',
+					uploaded: obj.uploaded
+				}))
+			};
+	
+			return new Response(JSON.stringify(backups), {
+				status: 200,
+				headers: { ...CORS_HEADERS }
+			});
+	
+		} catch (error) {
+			console.error('List backups error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to list backups',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	},
+	async handleDownloadBackup(request, env) {
+		try {
+			const url = new URL(request.url);
+			const userId = url.searchParams.get('userId');
+			const characterName = url.searchParams.get('characterName');
+			const key = url.searchParams.get('key');
+			
+			if (!userId || !characterName || !key) {
+				return new Response(JSON.stringify({
+					error: 'Missing required parameters'
+				}), {
+					status: 400,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			const authHeader = request.headers.get('Authorization');
+			if (!authHeader) {
+				return new Response(JSON.stringify({
+					error: 'Missing Authorization header'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			const [, apiKey] = authHeader.split(' ');
+			const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+			if (!isValid) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized: Invalid API key or username mismatch'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			const backup = await env.CHARACTER_BACKUPS.get(key);
+			if (!backup) {
+				return new Response(JSON.stringify({
+					error: 'Backup not found'
+				}), {
+					status: 404,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			const headers = new Headers();
+			headers.set('Content-Type', 'application/json');
+			headers.set('Content-Disposition', `attachment; filename="${characterName}-backup.json"`);
+			Object.entries(CORS_HEADERS).forEach(([key, value]) => headers.set(key, value));
+
+			// Return the raw backup data directly
+			return new Response(backup, { headers });
+		} catch (error) {
+			console.error('Error downloading backup:', error);
+			return new Response(JSON.stringify({
+				error: 'Internal server error',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	},
+
+	async handleDeleteBackup(request, env) {
+		try {
+			const { userId, characterName, key } = await request.json();
+			
+			if (!userId || !characterName || !key) {
+				return new Response(JSON.stringify({
+					error: 'Missing required parameters'
+				}), {
+					status: 400,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			const authHeader = request.headers.get('Authorization');
+			if (!authHeader) {
+				return new Response(JSON.stringify({
+					error: 'Missing Authorization header'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			const [, apiKey] = authHeader.split(' ');
+			const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+			if (!isValid) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized: Invalid API key or username mismatch'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			// Check if backup exists before attempting to delete
+			const exists = await env.CHARACTER_BACKUPS.head(key);
+			if (!exists) {
+				return new Response(JSON.stringify({
+					error: 'Backup not found'
+				}), {
+					status: 404,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			// Delete the backup
+			await env.CHARACTER_BACKUPS.delete(key);
+
+			return new Response(JSON.stringify({
+				success: true,
+				message: 'Backup deleted successfully'
+			}), {
+				status: 200,
+				headers: { ...CORS_HEADERS }
+			});
+		} catch (error) {
+			console.error('Error deleting backup:', error);
+			return new Response(JSON.stringify({
+				error: 'Internal server error',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	},
+
 	async fetch(request, env) {
 		const url = new URL(request.url);
 		const path = url.pathname;
@@ -2749,6 +3125,8 @@ export default {
 			'/discord/interactions',
 			'/interactions',
 			'/memory-list',
+			'/api/character/backup-list',
+			'/api/character/download-backup',
 			'/init',
 			'/check'
 		].includes(path)) {
@@ -2773,6 +3151,9 @@ export default {
 					case '/get-world': {
 						return await this.handleGetWorld(request, env);
 					}
+					case '/api/character/backup-list': {
+						return await this.handleListBackups(request, env);
+					}
 					case 'get-world-data': {
 						return await this.handleGetWorldData(request, env);
 					}
@@ -2790,6 +3171,9 @@ export default {
 					}
 					case '/memory-list': {
 						return await this.handleMemoryList(request, env);
+					}
+					case '/api/character/download-backup': {
+						return await this.handleDownloadBackup(request, env);
 					}
 					case '/visit-count': {
 						return this.getVisitCount(request, env);
@@ -4485,6 +4869,12 @@ export default {
 							});
 						}
 					}
+					case '/api/character/create-backup': {
+						return await this.handleCreateBackup(request, env);
+					}
+					case '/api/character/delete-backup': {
+						return await this.handleDeleteBackup(request, env);
+					}
 					default: {
 						return new Response(JSON.stringify({ error: 'Invalid endpoint' }), {
 							status: 404,
@@ -4509,4 +4899,5 @@ export default {
 		});
 	}
 }
+
 

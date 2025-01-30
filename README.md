@@ -89,6 +89,116 @@ The `wrangler.toml` file contains the configuration for your worker and R2 bucke
 - `/api/character/delete-memory`: Delete a specific memory
 - `/api/character/update-memory`: Update an existing memory
 
+## Backup System
+
+The system includes both automatic daily backups and manual checkpoint backups for characters.
+
+### Automatic Daily Backups
+- System automatically creates daily backups at midnight UTC
+- Maintains a 7-day rolling window of backups
+- Stored in character's backup directory: `{userId}/{characterName}/{date}-{uuid}.json`
+- Old backups automatically cleaned up after 7 days
+
+### Manual Checkpoint Backups
+- Users can create manual checkpoint backups at any time
+- No limit on number of checkpoint backups
+- Stored in separate directory: `{userId}/{characterName}/checkpoints/{timestamp}-{uuid}.json`
+- Useful for saving important character states or before making major changes
+
+### Backup Endpoints
+
+#### Create Manual Backup
+- Endpoint: `POST /api/character/create-backup`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+- Response:
+  ```json
+  {
+    "success": true,
+    "message": "Backup created successfully",
+    "timestamp": "ISO-8601 timestamp"
+  }
+  ```
+
+#### List Available Backups
+- Endpoint: `GET /api/character/backup-list`
+- Authentication: Required
+- Query Parameters:
+  - `userId`: Character owner's ID
+  - `characterName`: Character's slug/name
+- Response:
+  ```json
+  {
+    "automatic": [
+      {
+        "key": "string",
+        "date": "YYYY-MM-DD",
+        "type": "automatic",
+        "uploaded": "timestamp"
+      }
+    ],
+    "checkpoints": [
+      {
+        "key": "string",
+        "date": "ISO-8601 timestamp",
+        "type": "checkpoint",
+        "uploaded": "timestamp"
+      }
+    ]
+  }
+  ```
+
+#### Download Backup
+- Endpoint: `GET /api/character/download-backup`
+- Authentication: Required
+- Query Parameters:
+  - `userId`: Character owner's ID
+  - `characterName`: Character's slug/name
+  - `key`: Full backup key path from backup-list
+- Response: JSON file download containing character backup data
+
+#### Delete Backup
+- Endpoint: `POST /api/character/delete-backup`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "key": "string"
+  }
+  ```
+- Response:
+  ```json
+  {
+    "success": true,
+    "message": "Backup deleted successfully"
+  }
+  ```
+
+### Security Features
+- All backups stored in a separate, private R2 bucket
+- Access requires valid API key authentication
+- Filenames include random UUIDs to prevent unauthorized access
+- Cache-Control headers prevent caching of backup data
+- Backups organized by user/character to maintain data isolation
+
+### Best Practices
+1. Create manual checkpoints before:
+   - Making significant character changes
+   - Updating training data or personality
+   - Modifying memory systems
+2. Use descriptive timestamps for manual checkpoints
+3. Monitor backup storage usage
+4. Regularly verify backup integrity
+5. Keep track of important checkpoint dates
+
 ## Memory Management System
 
 The system includes a comprehensive memory management system for characters that supports various operations:

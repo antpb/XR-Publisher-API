@@ -286,6 +286,11 @@ binding = "WORLD_BUCKET"
 bucket_name = "${project_name}-bucket"
 preview_bucket_name = "${project_name}-bucket-preview"
 
+[[r2_buckets]]
+binding = "CHARACTER_BACKUPS"
+bucket_name = "${project_name}-character-backups"
+preview_bucket_name = "${project_name}-character-backups-preview"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
 EOL
@@ -293,16 +298,26 @@ EOL
 echo "Created final wrangler.toml with all configurations"
 
 # Create R2 bucket and set CORS rules (unchanged)
-echo "Creating R2 bucket..."
+echo "Creating R2 buckets..."
+
+# Create main world bucket
 output=$(npx wrangler r2 bucket create "${project_name}-bucket" 2>&1)
 if [[ $output != *"Created bucket"* ]]; then
-    echo "Error creating R2 bucket: $output"
+    echo "Error creating main R2 bucket: $output"
     exit 1
 fi
-echo "R2 bucket created successfully."
+echo "Main R2 bucket created successfully."
 
-# Set CORS rules for the R2 bucket
-echo "Setting CORS rules for the R2 bucket..."
+# Create character backups bucket
+output=$(npx wrangler r2 bucket create "${project_name}-character-backups" 2>&1)
+if [[ $output != *"Created bucket"* ]]; then
+    echo "Error creating character backups R2 bucket: $output"
+    exit 1
+fi
+echo "Character backups R2 bucket created successfully."
+
+# Set CORS rules for the main bucket
+echo "Setting CORS rules for the buckets..."
 cat > cors-rules.json << EOL
 {
   "cors_rules": [
@@ -316,12 +331,19 @@ cat > cors-rules.json << EOL
 }
 EOL
 
+# Apply CORS rules to both buckets
 output=$(npx wrangler r2 bucket cors put "${project_name}-bucket" --rules ./cors-rules.json 2>&1)
 if [[ $output == *"Error"* ]]; then
-    echo "Error setting CORS rules: $output"
+    echo "Error setting CORS rules for main bucket: $output"
     exit 1
 fi
-echo "CORS rules set successfully."
+
+output=$(npx wrangler r2 bucket cors put "${project_name}-character-backups" --rules ./cors-rules.json 2>&1)
+if [[ $output == *"Error"* ]]; then
+    echo "Error setting CORS rules for character backups bucket: $output"
+    exit 1
+fi
+echo "CORS rules set successfully for both buckets."
 
 # Rest of the setup (API secrets, deployment, etc.)
 api_secret=$(generate_random_string 32)
