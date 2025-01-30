@@ -2390,7 +2390,7 @@ export default {
 				});
 			}
 
-			const { sessionId, memoryId } = await request.json();
+			const { sessionId, memoryId, characterId } = await request.json();
 			
 			if (!sessionId || !memoryId) {
 				return new Response(JSON.stringify({
@@ -2409,6 +2409,7 @@ export default {
 				body: JSON.stringify({ 
 					sessionId, 
 					memoryId,
+					characterId,
 					username: authResult.username
 				})
 			}));
@@ -3013,14 +3014,14 @@ export default {
 						}
 					}
 					case '/api/character/memory': {
-						const { sessionId, memory } = await request.json();
+						const { sessionId, content, type, userId, userName, roomId, agentId, isUnique, importance_score } = await request.json();
 
 						const id = env.CHARACTER_REGISTRY.idFromName("global");
 						const registry = env.CHARACTER_REGISTRY.get(id);
 
 						const response = await registry.fetch(new Request('http://internal/create-memory', {
 							method: 'POST',
-							body: JSON.stringify({ sessionId, memory })
+							body: JSON.stringify({ sessionId, content, type, userId, userName, roomId, agentId, isUnique, importance_score })
 						}));
 
 						return new Response(await response.text(), {
@@ -4378,6 +4379,111 @@ export default {
 					}
 					case '/memory-list': {
 						return await this.handleMemoryList(request, env);
+					}
+					case '/api/character/export': 
+					case '/export-character': {
+						try {
+							const { userId, characterName } = await request.json();
+							const characterRegistry = env.CHARACTER_REGISTRY.get(env.CHARACTER_REGISTRY.idFromName('default'));
+							const response = await characterRegistry.fetch(new Request('http://internal/export-character', {
+								method: 'POST',
+								headers: request.headers,
+								body: JSON.stringify({ userId, characterName })
+							}));
+							return response;
+						} catch (error) {
+							return new Response(JSON.stringify({ error: error.message }), {
+								status: 500,
+								headers: { 'Content-Type': 'application/json', ...corsHeaders() }
+							});
+						}
+					}
+					case '/api/character/import-new': {
+						try {
+							// Handle preflight request
+							if (request.method === 'OPTIONS') {
+								return new Response(null, {
+									status: 204,
+									headers: {
+										'Access-Control-Allow-Origin': '*',
+										'Access-Control-Allow-Methods': 'POST, OPTIONS',
+										'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+										'Access-Control-Max-Age': '86400'
+									}
+								});
+							}
+
+							const body = await request.json();
+							const { userId, importData, characterData } = body;
+
+							// If we have importData, extract character from it
+							const rawCharacterData = characterData || (importData?.character ? importData.character : null);
+
+							if (!rawCharacterData) {
+								return new Response(JSON.stringify({
+									error: 'Missing character data',
+									details: 'Request must include either characterData or importData.character'
+								}), {
+									status: 400,
+									headers: {
+										'Content-Type': 'application/json',
+										'Access-Control-Allow-Origin': '*'
+									}
+								});
+							}
+
+							// Normalize field names to snake_case
+							const finalCharacterData = {
+								name: rawCharacterData.name,
+								model_provider: rawCharacterData.model_provider || rawCharacterData.modelProvider,
+								status: rawCharacterData.status || 'private',
+								bio: rawCharacterData.bio || '',
+								settings: rawCharacterData.settings || {},
+								vrm_url: rawCharacterData.vrm_url || rawCharacterData.vrmUrl,
+								profile_img: rawCharacterData.profile_img || rawCharacterData.profileImg,
+								banner_img: rawCharacterData.banner_img || rawCharacterData.bannerImg,
+								clients: rawCharacterData.clients || ['DIRECT'],
+								lore: rawCharacterData.lore || [],
+								topics: rawCharacterData.topics || [],
+								adjectives: rawCharacterData.adjectives || [],
+								messageExamples: rawCharacterData.messageExamples || [],
+								postExamples: rawCharacterData.postExamples || [],
+								style: rawCharacterData.style || { all: [], chat: [], post: [] },
+								wallets: rawCharacterData.wallets || { ETH: '0x0000000000000000000000000000000000000000' }
+							};
+
+							const characterRegistry = env.CHARACTER_REGISTRY.get(env.CHARACTER_REGISTRY.idFromName('default'));
+							const registryResponse = await characterRegistry.fetch(new Request('http://internal/import-new-character', {
+									method: 'POST',
+									headers: request.headers,
+									body: JSON.stringify({ userId, characterData: finalCharacterData })
+								}));
+
+							const responseData = await registryResponse.json();
+
+							return new Response(JSON.stringify(responseData), {
+								status: registryResponse.status,
+								headers: {
+									'Content-Type': 'application/json',
+									'Access-Control-Allow-Origin': '*',
+									'Access-Control-Allow-Methods': 'POST, OPTIONS',
+									'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+								}
+							});
+						} catch (error) {
+							return new Response(JSON.stringify({ 
+								error: 'Failed to import character',
+								details: error.message 
+							}), {
+								status: 500,
+								headers: {
+									'Content-Type': 'application/json',
+									'Access-Control-Allow-Origin': '*',
+									'Access-Control-Allow-Methods': 'POST, OPTIONS',
+									'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+								}
+							});
+						}
 					}
 					default: {
 						return new Response(JSON.stringify({ error: 'Invalid endpoint' }), {

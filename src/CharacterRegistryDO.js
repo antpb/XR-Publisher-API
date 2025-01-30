@@ -1,5 +1,7 @@
 import { EnhancedSQLiteMemoryAdapter } from './EnhancedSQLiteMemoryAdapter.js';
 import { initializeWorkerCompat } from './WorkerCompatibilityLayer.js';
+import { NonceManager } from './NonceManager.js';
+import { DatabaseMigrationManager } from './DatabaseMigrationManager.js';
 
 const CORS_HEADERS = {
 	'Access-Control-Allow-Origin': '*',
@@ -16,91 +18,6 @@ function slugifyCharacterName(name) {
 		.replace(/\s+/g, '-');    // Replace spaces with hyphens
 }
 
-// Function to normalize character name for comparison
-function normalizeCharacterName(name) {
-	return name.trim().toLowerCase();
-}
-
-class NonceManager {
-	constructor(sql) {
-		this.sql = sql;
-	}
-
-	async createNonce(roomId, sessionId, expiresInSeconds = 300) {
-		const nonce = crypto.randomUUID();
-		const expiresAt = new Date(Date.now() + (expiresInSeconds * 1000));
-
-		try {
-			// Try to update existing nonce first
-			await this.sql.exec(`
-                UPDATE session_nonces 
-                SET nonce = ?,
-                    room_id = ?,
-                    expires_at = ?,
-                    request_count = 0,
-                    created_at = CURRENT_TIMESTAMP
-                WHERE session_id = ?
-            `, nonce, roomId, expiresAt.toISOString(), sessionId);
-
-			// If no row was updated, insert new one
-			const updateResult = await this.sql.exec('SELECT changes() as count').toArray();
-			if (updateResult[0].count === 0) {
-				await this.sql.exec(`
-                    INSERT INTO session_nonces (
-                        session_id,
-                        room_id,
-                        nonce,
-                        expires_at,
-                        request_count,
-                        created_at
-                    ) VALUES (?, ?, ?, ?, 0, CURRENT_TIMESTAMP)
-                `, sessionId, roomId, nonce, expiresAt.toISOString());
-			}
-
-			return { nonce };
-		} catch (error) {
-			console.error('Error creating/updating nonce:', error);
-			throw error;
-		}
-	}
-
-	async validateNonce(sessionId, nonce, maxRequests = 5) {
-		const results = await this.sql.exec(`
-            SELECT * FROM session_nonces
-            WHERE session_id = ? 
-            AND nonce = ? 
-            AND expires_at > CURRENT_TIMESTAMP
-            AND request_count < ?
-        `, sessionId, nonce, maxRequests).toArray();
-
-		if (!results.length) {
-			return false;
-		}
-
-		// Update request count
-		await this.sql.exec(`
-            UPDATE session_nonces 
-            SET request_count = request_count + 1 
-            WHERE session_id = ? AND nonce = ?
-        `, sessionId, nonce);
-
-		return true;
-	}
-
-	async cleanupExpiredNonces() {
-		try {
-			await this.sql.exec(`
-                DELETE FROM session_nonces 
-                WHERE expires_at < CURRENT_TIMESTAMP
-            `);
-			return true;
-		} catch (error) {
-			console.error('Error cleaning up expired nonces:', error);
-			return false;
-		}
-	}
-}
-
 export class CharacterRegistryDO {
 	#sessions = new Map();
 	#sessionTimeouts = new Map();
@@ -109,9 +26,9 @@ export class CharacterRegistryDO {
 		initializeWorkerCompat();
 		this.state = state;
 		this.env = env;
-		this.storage = state.storage;
 		this.sql = state.storage.sql;
 		this.nonceManager = new NonceManager(this.sql);
+		this.migrationManager = new DatabaseMigrationManager(this.sql);
 
 		// Add explicit timeouts for DO operations
 		this.requestTimeout = 45000;
@@ -799,35 +716,14 @@ export class CharacterRegistryDO {
 
 	async handleMigrateSchema() {
 		try {
-			// First ensure base schema exists
-			// await this.initializeSchema();
-			// ('Base schema initialized');
-
-			// // Then add room support
-			// await this.addRoomSupport();
-			// ('Room support added');
-
-			// // Add image fields
-			// await this.migrateImageFields();
-			// ('Image fields added');
-
-			// await this.migrateStatusField();
-			// ('Status field added');
-
-			// await this.migrateMemorySchema();
-			// ('Memory schema migrated');
-
-			await this.migrateWalletSchema();
-			('Wallet schema migrated');
-
-
-
+			await this.migrationManager.migrateWalletSchema();
+			
 			return new Response(JSON.stringify({
 				success: true,
 				message: 'Schema migration completed successfully',
 				details: {
 					baseSchema: true,
-					characterSlugs: true,  // Add this
+					characterSlugs: true,
 					roomSupport: true,
 					imageFields: true
 				}
@@ -1173,9 +1069,6 @@ export class CharacterRegistryDO {
 		}
 	}
 
-
-
-
 	async getCharacter(author, slug) {  // Changed parameter name from 'name' to 'slug'
 		try {
 			('Getting character:', author, slug);
@@ -1463,98 +1356,6 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	// async initializeCharacterRoom(author, name, roomId) {
-	// 	try {
-	// 		const character = await this.getCharacter(author, name);
-	// 		console.log('Character data:', character);
-	// 		if (!character) {
-	// 			throw new Error('Character not found');
-	// 		}
-
-	// 		if (!roomId) {
-	// 			throw new Error('Room ID is required');
-	// 		}
-
-	// 		// Get or create room with provided ID
-	// 		const roomExists = await this.sql.exec(`
-	// 		SELECT id FROM rooms WHERE id = ? LIMIT 1
-	// 	  `, roomId).toArray();
-
-	// 		if (!roomExists.length) {
-	// 			console.log('Creating new room:', roomId);
-	// 			await this.sql.exec(`
-	// 		  INSERT INTO rooms (
-	// 			id,
-	// 			character_id,
-	// 			created_at,
-	// 			last_active
-	// 		  ) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-	// 		`, roomId, character.id);
-	// 		}
-
-	// 		// Initialize runtime
-	// 		const secrets = await this.getCharacterSecrets(character.id);
-	// 		const runtime = await this.initializeRuntime(character, secrets);
-
-	// 		// Create session
-	// 		const sessionId = crypto.randomUUID();
-	// 		console.log('Creating session with ID:', sessionId);
-
-	// 		// Create session record with room ID
-	// 		await this.sql.exec(`
-	// 		INSERT INTO character_sessions (
-	// 		  id,
-	// 		  character_id,
-	// 		  room_id,
-	// 		  created_at,
-	// 		  last_active
-	// 		) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-	// 	  `, sessionId, character.id, roomId);
-
-	// 		// Update room's current session
-	// 		await this.sql.exec(`
-	// 		UPDATE rooms 
-	// 		SET current_session_id = ?,
-	// 			last_active = CURRENT_TIMESTAMP 
-	// 		WHERE id = ?
-	// 	  `, sessionId, roomId);
-
-	// 		// Create nonce for security
-	// 		const { nonce } = await this.nonceManager.createNonce(roomId, sessionId);
-
-	// 		// Store runtime in memory
-	// 		this.#sessions.set(roomId, {
-	// 			runtime,
-	// 			character,
-	// 			roomId,
-	// 			lastActive: new Date()
-	// 		});
-
-	// 		return {
-	// 			roomId,
-	// 			sessionId,
-	// 			nonce,
-	// 			config: {
-	// 				name: character.name,
-	// 				status: character.status || 'private',
-	// 				modelProvider: character.modelProvider,
-	// 				bio: character.bio,
-	// 				vrmUrl: character.vrmUrl,
-	// 				lore: character.lore,
-	// 				style: character.style,
-	// 				adjectives: character.adjectives,
-	// 				topics: character.topics,
-	// 				settings: {
-	// 					...character.settings,
-	// 					secrets: undefined
-	// 				}
-	// 			}
-	// 		};
-	// 	} catch (error) {
-	// 		console.error('Room initialization error:', error);
-	// 		throw error;
-	// 	}
-	// }
 
 
 	// First, add the token estimation utility
@@ -1975,7 +1776,7 @@ export class CharacterRegistryDO {
 			return [];
 		}
 	}
-	async handleWorldMessage(sessionId, message, nonce = null, apiKey = null) { // Add apiKey parameter
+	async handleWorldMessage(sessionId, message, nonce = null, apiKey = null) {
 		try {
 
 			// If we have an API key, verify it and get user info
@@ -2337,7 +2138,6 @@ export class CharacterRegistryDO {
 			}
 
 
-
 			const cleanedData = await this.cleanCharacterData(character);
 
 			// Insert clients with default if not provided
@@ -2497,39 +2297,58 @@ export class CharacterRegistryDO {
 
 	async handleCreateMemory(request) {
 		try {
-			const { sessionId, memory, type = 'message' } = await request.json();
+			const { sessionId, content, type, userId, userName, roomId, agentId, isUnique, importance_score } = await request.json();
+
+			if (!content) {
+				throw new Error('Content is required');
+			}
+
 			const session = await this.initializeSession(sessionId);
+			
 			if (!session?.runtime?.databaseAdapter) {
 				throw new Error('Session not initialized');
 			}
 
-			// Ensure agentId is set to the character's ID and type is set
-			const memoryWithAgentId = {
-				...memory,
-				agentId: session.character.id,
-				type: type
+			const memoryWithId = {
+				id: crypto.randomUUID(),
+				type: type || 'message',
+				content,
+				userId: userId || null,
+				userName: userName || 'guest',
+				roomId: roomId || session.roomId,
+				agentId: agentId || session.character.slug,
+				isUnique: isUnique || false,
+				createdAt: Date.now(),
+				importance_score: importance_score || 0,
+				access_count: 0,
+				metadata: null
 			};
 
-			await session.runtime.databaseAdapter.createMemory(memoryWithAgentId);
+			await session.runtime.databaseAdapter.createMemory(memoryWithId);
 
 			return new Response(JSON.stringify({
 				success: true,
-				message: 'Memory created'
+				message: 'Memory created',
+				memory: memoryWithId
 			}), {
 				headers: { 'Content-Type': 'application/json' }
 			});
 		} catch (error) {
-			console.error('Create memory error:', error);
+			console.error('[handleCreateMemory] Error:', {
+				name: error.name,
+				message: error.message,
+				stack: error.stack
+			});
 			return new Response(JSON.stringify({
 				error: 'Failed to create memory',
-				details: error.message
+				details: error.message,
+				type: error.constructor.name
 			}), {
 				status: 500,
 				headers: { 'Content-Type': 'application/json' }
 			});
 		}
 	}
-
 	async handleGetMemories(request) {
 		try {
 			const { sessionId, roomId, count, type, unique } = await request.json();
@@ -2591,121 +2410,555 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async handleInternalTwitterPost(request) {
+	async handleCharacterExport(request) {
 		try {
-			const { userId, characterName, tweet, sessionId, roomId, nonce } = await request.json();
+			const { userId, characterName } = await request.json();
+
+			// Get character data
 			const character = await this.getCharacter(userId, characterName);
 			if (!character) {
-				throw new Error('Character not found');
+				return new Response(JSON.stringify({ error: 'Character not found' }), {
+					status: 404,
+					headers: { ...CORS_HEADERS }
+				});
 			}
 
-			// Get secrets for auth
-			const secrets = await this.getCharacterSecrets(character.id);
+			// Get all rooms for this character
+			const rooms = await this.sql.exec(`
+			SELECT id FROM rooms
+			WHERE character_id = ?
+		  `, character.id).toArray();
 
-			// Import the TwitterClientInterface instead of Scraper directly
-			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+			const roomIds = rooms.map(r => r.id);
 
-			// Create runtime settings object from secrets
-			const runtime = {
-				settings: {
-					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
-					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
-					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies),
-					TELEGRAM_BOT_TOKEN: secrets.modelKeys.telegram_token
+			// Get all memories by processing rooms in batches
+			const BATCH_SIZE = 100; // SQLite typically has a limit of 999 variables
+			let allMemories = [];
+
+			for (let i = 0; i < roomIds.length; i += BATCH_SIZE) {
+				const batchIds = roomIds.slice(i, i + BATCH_SIZE);
+				if (batchIds.length === 0) continue;
+
+				const batchMemories = await this.sql.exec(`
+			  SELECT m.* 
+			  FROM memories m
+			  WHERE m.roomId IN (${batchIds.map(() => '?').join(',')})
+			  ORDER BY m.createdAt DESC
+			`, ...batchIds).toArray();
+
+				allMemories = allMemories.concat(batchMemories);
+			}
+
+			// Get all sessions for this character
+			const sessions = await this.sql.exec(`
+			SELECT * FROM character_sessions
+			WHERE character_id = ?
+			ORDER BY created_at DESC
+		  `, character.id).toArray();
+
+			// Structure the export data
+			const exportData = {
+				version: "1.0",
+				exportDate: new Date().toISOString(),
+				character: {
+					...character,
+					settings: {
+						...character.settings,
+						secrets: undefined // Remove sensitive data
+					}
+				},
+				memories: allMemories.map(memory => ({
+					type: memory.type,
+					content: memory.content && JSON.parse(memory.content),
+					userId: memory.userId,
+					userName: memory.userName,
+					roomId: memory.roomId,
+					createdAt: memory.createdAt,
+					importance_score: memory.importance_score || 0,
+					access_count: memory.access_count || 0,
+					metadata: memory.metadata && JSON.parse(memory.metadata)
+				})),
+				sessions: sessions.map(session => ({
+					id: session.id,
+					created_at: session.created_at,
+					last_active: session.last_active,
+				})),
+				configuration: {
+					modelProvider: character.modelProvider,
+					style: character.style,
+					wallets: character.wallets
+				},
+				metadata: {
+					roomCount: roomIds.length,
+					memoryCount: allMemories.length,
+					sessionCount: sessions.length,
+					firstInteraction: allMemories.length ? new Date(Math.min(...allMemories.map(m => m.createdAt))).toISOString() : null,
+					lastInteraction: allMemories.length ? new Date(Math.max(...allMemories.map(m => m.createdAt))).toISOString() : null,
 				}
 			};
 
-			// Initialize the Twitter client using the interface
-			const client = await TwitterClientInterface.start(runtime);
-
-			// Send the tweet
-			const result = await client.sendTweet(tweet);
-
-			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
-
-			return new Response(JSON.stringify({
-				success: true,
-				tweet: result,
-				nonce: newNonce.nonce
-			}), {
+			return new Response(JSON.stringify(exportData, null, 2), {
 				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
+					'Content-Type': 'application/json',
+					'Content-Disposition': `attachment; filename="${character.slug}-export.json"`,
+					...CORS_HEADERS
 				}
 			});
 
 		} catch (error) {
-			console.error('Internal Twitter post error:', error);
+			console.error('Export error:', error);
 			return new Response(JSON.stringify({
-				error: error.message,
-				details: error.stack
+				error: 'Export failed',
+				details: error.message
 			}), {
-				status: error.message.includes('not found') ? 404 : 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
+				status: 500,
+				headers: { ...CORS_HEADERS }
 			});
 		}
 	}
 
-	async handleTwitterReply(request) {
+	async handleCharacterImport(request) {
 		try {
-			const { userId, characterName, tweetId, replyText, sessionId, roomId, nonce } = await request.json();
-			const slug = characterName;
-			const character = await this.getCharacter(userId, characterName);
-			if (!character) {
-				throw new Error('Character not found');
+			const { userId, importData } = await request.json();
+
+			if (!userId || !importData) {
+				return new Response(JSON.stringify({
+					error: 'Missing required fields'
+				}), {
+					status: 400,
+					headers: { ...CORS_HEADERS }
+				});
 			}
 
-			// Get secrets for auth
-			const secrets = await this.getCharacterSecrets(character.id);
+			// Validate import data structure
+			if (!importData.version || !importData.character || !importData.memories) {
+				return new Response(JSON.stringify({
+					error: 'Invalid import data structure'
+				}), {
+					status: 400,
+					headers: { ...CORS_HEADERS }
+				});
+			}
 
-			// Import the TwitterClientInterface
-			const { TwitterClientInterface } = await import('./twitter-client/index.js');
+			// Begin transaction for atomic import
+			return await this.state.storage.transaction(async (txn) => {
+				// Create or update character
+				const character = importData.character;
+				character.author = userId; // Ensure correct ownership
 
-			// Create runtime settings object from secrets
-			const runtime = {
-				settings: {
-					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
-					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
-					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies),
-					TELEGRAM_BOT_TOKEN: secrets.modelKeys.telegram_token
+				// Generate new slug if needed
+				let slug = this.generateSlug(character.name);
+				const existingChar = await this.sql.exec(`
+			  SELECT id FROM characters 
+			  WHERE author = ? AND slug = ?
+			`, userId, slug).toArray();
+
+				if (existingChar.length > 0) {
+					// Append timestamp to make unique
+					slug = `${slug}-${Date.now()}`;
 				}
-			};
+				character.slug = slug;
 
-			// Initialize the Twitter client using the interface
-			const client = await TwitterClientInterface.start(runtime);
+				// Create character
+				const characterId = await this.createOrUpdateCharacter(userId, {
+					...character,
+					status: character.status || 'private',
+					modelProvider: character.modelProvider || 'openai',
+					settings: {
+						...character.settings,
+						secrets: undefined // Remove any existing secrets
+					}
+				});
 
-			// Send the reply using the existing sendTweet method with replyToId
-			const result = await client.sendTweet(replyText, tweetId);
+				// Import memories
+				const batchSize = 100; // Process memories in batches
+				for (let i = 0; i < importData.memories.length; i += batchSize) {
+					const memoryBatch = importData.memories.slice(i, i + batchSize);
 
-			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
-
-			return new Response(JSON.stringify({
-				success: true,
-				tweet: result,
-				nonce: newNonce.nonce
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
+					for (const memory of memoryBatch) {
+						await this.sql.exec(`
+				  INSERT INTO memories (
+					id,
+					type,
+					content,
+					userId,
+					userName,
+					roomId,
+					agentId,
+					isUnique,
+					createdAt,
+					importance_score,
+					access_count,
+					metadata
+				  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				`,
+							crypto.randomUUID(), // New unique ID
+							memory.type,
+							JSON.stringify(memory.content),
+							memory.userId,
+							memory.userName,
+							memory.roomId,
+							characterId.toString(), // Use new character ID
+							memory.isUnique ? 1 : 0,
+							memory.createdAt,
+							memory.importance_score || 0,
+							memory.access_count || 0,
+							memory.metadata ? JSON.stringify(memory.metadata) : null
+						);
+					}
 				}
+
+				// Create new sessions
+				const roomId = crypto.randomUUID();
+				const sessionId = crypto.randomUUID();
+
+				await this.sql.exec(`
+			  INSERT INTO rooms (
+				id,
+				character_id,
+				created_at,
+				last_active,
+				current_session_id
+			  ) VALUES (?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?)
+			`, roomId, characterId, sessionId);
+
+				await this.sql.exec(`
+			  INSERT INTO character_sessions (
+				id,
+				character_id,
+				room_id,
+				created_at,
+				last_active
+			  ) VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+			`, sessionId, characterId, roomId);
+
+				// Import configuration
+				if (importData.configuration?.wallets) {
+					await this.saveCharacterWallets(characterId, importData.configuration.wallets);
+				}
+
+				// Return success response with new IDs
+				return new Response(JSON.stringify({
+					success: true,
+					message: 'Character imported successfully',
+					characterId,
+					roomId,
+					sessionId,
+					characterSlug: slug,
+					importedMemories: importData.memories.length,
+					metadata: importData.metadata
+				}), {
+					headers: { ...CORS_HEADERS }
+				});
 			});
 
 		} catch (error) {
-			console.error('Twitter reply handler error:', error);
+			console.error('Import error:', error);
 			return new Response(JSON.stringify({
-				error: error.message,
-				details: error.stack
+				error: 'Import failed',
+				details: error.message
 			}), {
-				status: error.message.includes('not found') ? 404 : 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+
+		
+	}
+
+	async handleDeleteMemory(request) {
+		try {
+			const { sessionId, memoryId, username } = await request.json();
+
+			if (!this.memoryAdapter) {
+				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
+				await this.memoryAdapter.initializeSchema();
+			}
+
+			const memory = await this.memoryAdapter.getMemoryById(memoryId);
+			if (!memory) {
+				return new Response(JSON.stringify({
+					error: 'Memory not found',
+					details: `No memory found with ID ${memoryId}`
+				}), {
+					status: 404,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+
+			const characterId = memory.agentId.split('.')[0];
+
+			const characters = await this.sql.exec(`
+				SELECT * FROM characters WHERE slug = ? LIMIT 1
+			`, characterId).toArray();
+
+			if (!characters.length) {
+				return new Response(JSON.stringify({
+					error: 'Character not found',
+					details: 'Associated character no longer exists'
+				}), {
+					status: 404,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+
+			const character = characters[0];
+
+			if (character.author !== username) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized',
+					details: 'You do not have permission to delete this character\'s memories'
+				}), {
+					status: 403,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+
+			const success = await this.memoryAdapter.deleteMemory(memoryId);
+			if (!success) {
+				return new Response(JSON.stringify({
+					error: 'Failed to delete memory'
+				}), {
+					status: 500,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+
+			return new Response(JSON.stringify({ success: true }), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		} catch (error) {
+			console.error('[CharacterRegistryDO.handleDeleteMemory] Error:', {
+				message: error.message,
+				stack: error.stack
+			});
+			return new Response(JSON.stringify({
+				error: 'Internal server error',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+
+
+	async handleFindMemory(request) {
+		try {
+			const { sessionId, query, agentId, username } = await request.json();
+
+			const character = await this.getCharacter(username, agentId);
+			if (!character) {
+				return new Response(JSON.stringify({
+					error: 'Character not found',
+					details: 'Invalid character or unauthorized access'
+				}), { status: 404 });
+			}
+
+			if (!this.memoryAdapter) {
+				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
+			}
+
+			const memories = await this.memoryAdapter.findMemories(query, {
+				agentId: character.slug,
+					userId: username
+			});
+
+			return new Response(JSON.stringify(memories), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		} catch (error) {
+			console.error('[CharacterRegistryDO.handleFindMemory] Error:', {
+				message: error.message,
+				stack: error.stack
+			});
+			return new Response(JSON.stringify({
+				error: 'Internal server error',
+				details: error.message
+			}), { status: 500 });
+		}
+	}
+
+
+	async handleUpdateMemory(request) {
+		try {
+			const { sessionId, memoryId, content, type, userId, importance_score = 0, username } = await request.json();
+
+			if (!this.memoryAdapter) {
+				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
+			}
+
+			const memory = await this.memoryAdapter.getMemoryById(memoryId);
+			if (!memory) {
+				return new Response(JSON.stringify({
+					error: 'Memory not found',
+					details: `No memory found with ID ${memoryId}`
+				}), { status: 404 });
+			}
+
+			const characters = await this.sql.exec(`
+				SELECT * FROM characters WHERE slug = ? LIMIT 1
+			`, memory.agentId).toArray();
+
+			if (!characters.length) {
+				return new Response(JSON.stringify({
+					error: 'Character not found',
+					details: 'Associated character no longer exists'
+				}), { status: 404 });
+			}
+
+			const character = characters[0];
+
+			if (character.author !== username) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized',
+					details: 'You do not have permission to update this character\'s memories'
+				}), {
+					status: 403,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+
+			const existingContent = typeof memory.content === 'string' ? JSON.parse(memory.content) : memory.content;
+			const updatedContent = typeof content === 'string' ? JSON.parse(content) : content;
+			const mergedContent = {
+				...existingContent,
+				...updatedContent
+			};
+
+			const success = await this.memoryAdapter.updateMemory({
+				id: memoryId,
+				type: type || memory.type,
+				content: JSON.stringify(mergedContent),
+				userId: userId || memory.userId,
+				importance_score: importance_score || memory.importance_score || 0,
+				metadata: memory.metadata
+			});
+
+			if (!success) {
+				return new Response(JSON.stringify({
+					error: 'Failed to update memory',
+					details: 'Database update failed'
+				}), { status: 500 });
+			}
+
+			const updatedMemory = await this.memoryAdapter.getMemoryById(memoryId);
+			return new Response(JSON.stringify(updatedMemory), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		} catch (error) {
+			return new Response(JSON.stringify({
+				error: 'Failed to update memory',
+				details: error.message
+			}), { status: 500 });
+		}
+	}
+
+	async handleMemoryList(request) {
+		try {
+			const { slug, sessionId, type, username } = await request.json();
+
+			if (!this.memoryAdapter) {
+				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
+				await this.memoryAdapter.initializeSchema();
+			}
+
+			const characters = await this.sql.exec(`
+				SELECT * FROM characters WHERE slug = ? AND author = ? LIMIT 1
+				`, slug, username).toArray();
+
+			if (!characters.length) {
+				return new Response(JSON.stringify({
+					error: 'Character not found',
+					details: `No character found with slug: ${slug}`
+				}), {
+					status: 404,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+
+			const character = characters[0];
+
+			const memories = await this.memoryAdapter.getAllMemoriesByCharacter(character.slug, {
+				type: type === 'all' ? null : type
+			});
+
+			return new Response(JSON.stringify(memories), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		} catch (error) {
+			console.error('[CharacterRegistryDO] Memory list error:', {
+				message: error.message,
+				stack: error.stack
+			});
+			return new Response(JSON.stringify({
+				error: 'Failed to retrieve memories',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+
+	async handleInternalMemoryList(request) {
+		try {
+			const { characterId, type } = await request.json();
+
+			if (!this.memoryAdapter) {
+				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
+				await this.memoryAdapter.initializeSchema();
+			}
+
+			const memories = await this.memoryAdapter.getAllMemoriesByCharacter(characterId, {
+				type: type === 'all' ? null : type
+			});
+
+			return new Response(JSON.stringify(memories), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		} catch (error) {
+			console.error('[CharacterRegistryDO] Memory list error:', {
+				message: error.message,
+				stack: error.stack
+			});
+			return new Response(JSON.stringify({
+				error: 'Failed to retrieve memories',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+
+	async handleGetSession(request) {
+		try {
+			const { sessionId } = await request.json();
+
+			const session = this.#sessions.get(sessionId);
+			if (!session) {
+				throw new Error('Session not found');
+			}
+
+			return new Response(JSON.stringify({
+				sessionId,
+				characterId: session.character.id,
+				roomId: session.roomId
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		} catch (error) {
+			console.error('[handleGetSession] Error:', {
+				message: error.message,
+				stack: error.stack
+			});
+			return new Response(JSON.stringify({
+				error: 'Session not found',
+				details: error.message
+			}), {
+				status: 404,
+				headers: { 'Content-Type': 'application/json' }
 			});
 		}
 	}
@@ -2776,1245 +3029,45 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async handleTwitterRetweet(request) {
-		try {
-			const { userId, characterName, tweetId, quoteText } = await request.json();
-
-			// Get character
-			const character = await this.getCharacter(userId, characterName);
-			if (!character) {
-				throw new Error('Character not found');
-			}
-
-			// Get secrets and initialize client
-			const secrets = await this.getCharacterSecrets(character.id);
-			const { TwitterClientInterface } = await import('./client-twitter/index.js');
-			const twitterClient = await TwitterClientInterface.start({
-				settings: {
-					TWITTER_USERNAME: secrets.modelKeys.twitter_username,
-					TWITTER_PASSWORD: secrets.modelKeys.twitter_password,
-					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-					TWITTER_COOKIES: secrets.modelKeys.twitter_cookies,
-					TWITTER_DRY_RUN: 'true'
-				}
-			});
-
-			const result = await twitterClient.retweet(tweetId, quoteText);
-
-			return new Response(JSON.stringify(result), {
-				headers: { ...CORS_HEADERS }
-			});
-		} catch (error) {
-			console.error('Twitter retweet error:', error);
-			return new Response(JSON.stringify({
-				error: 'Failed to retweet',
-				details: error.message
-			}), {
-				status: 500,
-				headers: { ...CORS_HEADERS }
-			});
-		}
-	}
-
-	async handleTwitterLike(request) {
-		try {
-			const { characterId, tweetId } = await request.json();
-
-			// Get character secrets/credentials
-			const secrets = await this.getCharacterSecrets(characterId);
-			if (!secrets?.modelKeys?.twitter_cookies) {
-				throw new Error('Twitter credentials not found');
-			}
-
-			const cookies = secrets.modelKeys.twitter_cookies;
-			const cookieString = cookies.map(cookie => `${cookie.name}=${cookie.value}`).join('; ');
-			const csrfToken = cookies.find(c => c.name === 'ct0')?.value;
-
-			// Call Twitter's like endpoint
-			const likeResponse = await fetch('https://api.twitter.com/1.1/favorites/create.json', {
-				method: 'POST',
-				headers: {
-					'authorization': `Bearer ${this.env.TWITTER_BEARER_TOKEN}`,
-					'cookie': cookieString,
-					'content-type': 'application/x-www-form-urlencoded',
-					'x-csrf-token': csrfToken
-				},
-				body: `id=${tweetId}`
-			});
-
-			if (!likeResponse.ok) {
-				throw new Error(`Failed to like tweet: ${await likeResponse.text()}`);
-			}
-
-			return new Response(JSON.stringify({ success: true }), {
-				headers: { 'Content-Type': 'application/json' }
-			});
-
-		} catch (error) {
-			console.error('Twitter like handler error:', error);
-			return new Response(JSON.stringify({
-				error: 'Failed to like tweet',
-				details: error.message
-			}), {
-				status: 500,
-				headers: { 'Content-Type': 'application/json' }
-			});
-		}
-	}
-
-	// Helper method to get runtime from token
-	async getRuntimeFromToken(token) {
-		try {
-			// Find session with matching Twitter token
-			const sessions = await this.sql.exec(`
-			SELECT s.*, c.* 
-			FROM character_sessions s
-			JOIN characters c ON s.character_id = c.id
-			JOIN character_secrets cs ON c.id = cs.character_id
-			WHERE cs.model_keys LIKE ?
-		  `, `%${token}%`).toArray();
-
-			if (!sessions.length) {
-				return null;
-			}
-
-			const session = sessions[0];
-			const secrets = await this.getCharacterSecrets(session.character_id);
-
-			// Initialize and return runtime
-			return await this.initializeRuntime({
-				...session,
-				settings: {
-					...session.settings,
-					secrets
-				}
-			});
-		} catch (error) {
-			console.error('Error getting runtime from token:', error);
-			return null;
-		}
-	}
-	async getSessionFromToken(request) {
-		try {
-			const token = request.headers.get('Authorization');
-			if (!token) return null;
-
-			// Find session with matching Twitter token
-			const sessions = await this.sql.exec(`
-			SELECT s.*, c.* 
-			FROM character_sessions s
-			JOIN characters c ON s.character_id = c.id
-			JOIN character_secrets cs ON c.id = cs.character_id
-			WHERE cs.model_keys LIKE ?
-		  `, `%${token}%`).toArray();
-
-			if (!sessions.length) {
-				return null;
-			}
-
-			const session = sessions[0];
-
-			// Get secrets
-			const secrets = await this.getCharacterSecrets(session.character_id);
-			if (!secrets?.modelKeys?.twitter_token === token) {
-				return null;
-			}
-
-			return {
-				...session,
-				settings: {
-					...session.settings,
-					secrets
-				}
-			};
-		} catch (error) {
-			console.error('Error getting session from token:', error);
-			return null;
-		}
-	}
-
-	async handleTelegramMessage(request) {
-		try {
-			const body = await request.json();
-
-			// Forward to story handler if it's a public post
-			if (!body.chatId) {
-				// Create a new request with the same body for the story handler
-				const storyRequest = new Request(request.url, {
-					method: request.method,
-					headers: request.headers,
-					body: JSON.stringify(body)
-				});
-				return this.handleTelegramStory(storyRequest);
-			}
-
-			// Rest of the existing message handling code...
-			const { characterId, message, chatId, sessionId, roomId, nonce } = body;
-
-			if (!characterId) {
-				throw new Error('Character ID is required');
-			}
-
-			// Get character secrets/credentials
-			const secrets = await this.getCharacterSecrets(characterId);
-			
-			if (!secrets?.modelKeys?.telegram_token) {
-				throw new Error('Telegram token not found');
-			}
-
-			// Initialize Telegram bot
-			const { Telegraf } = await import('telegraf');
-			const bot = new Telegraf(secrets.modelKeys.telegram_token);
-
-			// Send direct message if chatId is provided
-			const result = await bot.telegram.sendMessage(chatId, message, {
-				parse_mode: 'HTML',
-				disable_web_page_preview: false
-			});
-
-			return new Response(JSON.stringify({
-				message: result,
-				chatId: chatId
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		} catch (error) {
-			console.error('[handleTelegramMessage] Error:', {
-				name: error.name,
-				message: error.message,
-				stack: error.stack
-			});
-			
-			return new Response(JSON.stringify({
-				error: error.message,
-				details: error.stack,
-				errorType: error.name
-			}), {
-				status: error.message.includes('not found') ? 404 : 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		}
-	}
-
-	async handleTelegramCredentials(request) {
-		try {
-			const { characterId } = await request.json();
-			if (!characterId) {
-				throw new Error('Character ID is required');
-			}
-
-			// Get character and verify it exists
-			const characters = await this.sql.exec(`
-			SELECT * FROM characters WHERE id = ?
-		  `, characterId).toArray();
-
-			if (!characters.length) {
-				throw new Error('Character not found');
-			}
-
-			// Get secrets and Telegram credentials
-			const secrets = await this.getCharacterSecrets(characterId);
-			if (!secrets?.modelKeys?.telegram_token) {
-				return new Response(JSON.stringify({
-					token: null
-				}), {
-					headers: {
-						...CORS_HEADERS,
-						'Content-Type': 'application/json'
-					}
-				});
-			}
-
-			return new Response(JSON.stringify({
-				token: secrets.modelKeys.telegram_token
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		} catch (error) {
-			console.error('Get Telegram credentials error:', error);
-			return new Response(JSON.stringify({
-				error: 'Failed to get Telegram credentials',
-				details: error.message
-			}), {
-				status: 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		}
-	}
-
-	async handleTelegramUpdates(request) {
-		try {
-			const { characterId } = await request.json();
-			if (!characterId) {
-				throw new Error('Character ID is required');
-			}
-
-			// Get character secrets/credentials
-			const secrets = await this.getCharacterSecrets(characterId);
-			if (!secrets?.modelKeys?.telegram_token) {
-				throw new Error('Telegram token not found');
-			}
-
-			const { TelegramClient } = await import('./telegram-client/index.js');
-			const client = new TelegramClient({
-				token: secrets.modelKeys.telegram_token
-			});
-
-			// Get updates from Telegram
-			const updates = await client.getUpdates();
-
-			return new Response(JSON.stringify({
-				updates
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		} catch (error) {
-			console.error('Internal Telegram updates error:', error);
-			return new Response(JSON.stringify({
-				error: error.message,
-				details: error.stack
-			}), {
-				status: error.message.includes('not found') ? 404 : 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		}
-	}
-
-	async handleTelegramReply(request) {
-		try {
-			const { characterId, messageId, replyText, chatId } = await request.json();
-
-			// Get character secrets/credentials
-			const secrets = await this.getCharacterSecrets(characterId);
-			if (!secrets?.modelKeys?.telegram_token) {
-				throw new Error('Telegram token not found');
-			}
-
-			const { TelegramClient } = await import('./telegram-client/index.js');
-			const client = new TelegramClient({
-				token: secrets.modelKeys.telegram_token
-			});
-
-			// Send reply
-			const result = await client.replyToMessage(chatId, messageId, replyText);
-
-			return new Response(JSON.stringify({
-				message: result
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		} catch (error) {
-			console.error('Internal Telegram reply error:', error);
-			return new Response(JSON.stringify({
-				error: error.message,
-				details: error.stack
-			}), {
-				status: error.message.includes('not found') ? 404 : 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		}
-	}
-
-	async handleTelegramEdit(request) {
-		try {
-			const { characterId, messageId, newText, chatId } = await request.json();
-
-			// Get character secrets/credentials
-			const secrets = await this.getCharacterSecrets(characterId);
-			if (!secrets?.modelKeys?.telegram_token) {
-				throw new Error('Telegram token not found');
-			}
-
-			const { TelegramClient } = await import('./telegram-client/index.js');
-			const client = new TelegramClient({
-				token: secrets.modelKeys.telegram_token
-			});
-
-			// Edit message
-			const result = await client.editMessage(chatId, messageId, newText);
-
-			return new Response(JSON.stringify({
-				message: result
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		} catch (error) {
-			console.error('Internal Telegram edit error:', error);
-			return new Response(JSON.stringify({
-				error: error.message,
-				details: error.stack
-			}), {
-				status: error.message.includes('not found') ? 404 : 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		}
-	}
-
-	async handleTelegramPin(request) {
-		try {
-			const { characterId, messageId, chatId } = await request.json();
-
-			// Get character secrets/credentials
-			const secrets = await this.getCharacterSecrets(characterId);
-			if (!secrets?.modelKeys?.telegram_token) {
-				throw new Error('Telegram token not found');
-			}
-
-			const { TelegramClient } = await import('./telegram-client/index.js');
-			const client = new TelegramClient({
-				token: secrets.modelKeys.telegram_token
-			});
-
-			// Pin message
-			const result = await client.pinMessage(chatId, messageId);
-
-			return new Response(JSON.stringify({
-				success: result
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		} catch (error) {
-			console.error('Internal Telegram pin error:', error);
-			return new Response(JSON.stringify({
-				error: error.message,
-				details: error.stack
-			}), {
-				status: error.message.includes('not found') ? 404 : 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		}
-	}
-
-	async handleTelegramMessages(request) {
-		try {
-			const body = await request.json();
-
-			const { userId, characterId, character, characterName, sessionId, roomId, nonce } = body;
-
-			// Get character ID from the character object or look it up by name
-			let resolvedCharacterId = characterId || character?.id;
-
-			if (!resolvedCharacterId && characterName) {
-				const char = await this.getCharacter(userId, characterName);
-				if (!char) {
-					throw new Error('Character not found');
-				}
-				resolvedCharacterId = char.id;
-			}
-
-			if (!resolvedCharacterId) {
-				throw new Error('Character ID could not be determined');
-			}
-
-			// Get character secrets/credentials
-			const secrets = await this.getCharacterSecrets(resolvedCharacterId);
-
-			if (!secrets?.modelKeys?.telegram_token) {
-				throw new Error('Telegram token not found');
-			}
-
-			// Initialize Telegram bot
-			const { Telegraf } = await import('telegraf');
-			const bot = new Telegraf(secrets.modelKeys.telegram_token);
-
-			// Verify bot access
-			const me = await bot.telegram.getMe();
-
-			// Get updates for all chats
-			const updates = await bot.telegram.getUpdates();
-			
-			// Log available chats for debugging
-			const availableChats = updates.map(update => ({
-				chat_id: update.message?.chat.id,
-				chat_title: update.message?.chat.title,
-				chat_type: update.message?.chat.type,
-				last_message: update.message?.date
-			})).filter(chat => chat.chat_id);
-			
-
-			// Format messages for the client
-			const messages = updates
-				.filter(update => {
-					const msg = update.message || update.edited_message || update.channel_post || update.edited_channel_post;
-					return msg && msg.chat && msg.chat.id; // Ensure chat ID exists
-				})
-				.map(update => {
-					const msg = update.message || update.edited_message || update.channel_post || update.edited_channel_post;
-					return {
-						id: msg.message_id,
-						text: msg.text || msg.caption || '',
-						createdAt: msg.date * 1000, // Convert to milliseconds
-						chatId: msg.chat.id,
-						chat: {
-							id: msg.chat.id,
-							title: msg.chat.title || msg.chat.username || 'Direct Message',
-							type: msg.chat.type
-						},
-						user: {
-							id: msg.from?.id,
-							name: msg.from?.first_name || msg.from?.username || 'Unknown',
-							profileImage: null
-						},
-						isEdited: !!update.edited_message || !!update.edited_channel_post,
-						replyToMessage: msg.reply_to_message ? {
-							id: msg.reply_to_message.message_id,
-							text: msg.reply_to_message.text || msg.reply_to_message.caption || ''
-						} : null
-					};
-				});
-
-
-			// Sort messages by date descending
-			messages.sort((a, b) => b.createdAt - a.createdAt);
-
-			// Create new nonce for session continuity
-			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
-
-			return new Response(JSON.stringify({
-				messages,
-				nonce: newNonce.nonce,
-				botInfo: me,
-				availableChats,
-				totalUpdates: updates.length,
-				filteredCount: messages.length
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		} catch (error) {
-			console.error('[handleTelegramMessages] Error:', {
-				name: error.name,
-				message: error.message,
-				stack: error.stack
-			});
-			
-			return new Response(JSON.stringify({
-				error: error.message,
-				details: error.stack,
-				errorType: error.name
-			}), {
-				status: error.message.includes('not found') ? 404 : 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		}
-	}
-	async handleTelegramStory(request) {
-		try {
-			const body = await request.json();
-	
-			const { characterId, message, sessionId, roomId, nonce } = body;
-	
-			if (!characterId) {
-				throw new Error('Character ID is required');
-			}
-	
-			// Get character secrets/credentials
-			const secrets = await this.getCharacterSecrets(characterId);
-			
-			if (!secrets?.modelKeys?.telegram_token) {
-				throw new Error('Telegram token not found');
-			}
-	
-			// Initialize Telegram bot
-			const { Telegraf } = await import('telegraf');
-			const bot = new Telegraf(secrets.modelKeys.telegram_token);
-	
-			// Get bot info
-			const me = await bot.telegram.getMe();
-	
-			// Try to get the channel directly if we have the ID stored
-			let channelId = secrets.modelKeys.telegram_channel_id;
-			let channelInfo;
-	
-			if (channelId) {
-				try {
-					channelInfo = await bot.telegram.getChat(channelId);
-				} catch (e) {
-					channelId = null;
-				}
-			}
-	
-			// If no stored channel or it's not accessible, look for channels in updates
-			if (!channelId) {
-				const updates = await bot.telegram.getUpdates();
-	
-				// Look for channels in updates
-				const channels = updates
-					.filter(update => {
-						const chat = update.message?.chat || update.channel_post?.chat;
-						return chat && chat.type === 'channel';
-					})
-					.map(update => ({
-						id: update.message?.chat.id || update.channel_post?.chat.id,
-						title: update.message?.chat.title || update.channel_post?.chat.title
-					}));
-	
-	
-				if (channels.length > 0) {
-					channelId = channels[0].id;
-					try {
-						channelInfo = await bot.telegram.getChat(channelId);
-					} catch (e) {
-						channelId = null;
-					}
-				}
-			}
-	
-			// If still no channel, try to get member chats
-			if (!channelId) {
-				try {
-					const adminChats = await bot.telegram.getMyCommands();
-				} catch (e) {
-				}
-			}
-	
-			if (!channelId) {
-				throw new Error('No channel found. Please add the bot to a channel as an admin and send at least one message.');
-			}
-	
-			// Send the message to the channel
-			const result = await bot.telegram.sendMessage(channelId, message, {
-				parse_mode: 'HTML',
-				disable_web_page_preview: false
-			});
-			
-	
-			return new Response(JSON.stringify({
-				success: true,
-				message: result,
-				channelId: channelId,
-				channelInfo: channelInfo
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		} catch (error) {
-			console.error('[handleTelegramStory] Error:', {
-				name: error.name,
-				message: error.message,
-				stack: error.stack
-			});
-			
-			return new Response(JSON.stringify({
-				error: error.message,
-				details: error.stack,
-				errorType: error.name
-			}), {
-				status: error.message.includes('not found') ? 404 : 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		}
-	}
-	
-	async handleTwitterClassify(request) {
-		try {
-			const { userId, characterName, text } = await request.json();
-			const character = await this.getCharacter(userId, characterName);
-			if (!character) {
-				throw new Error('Character not found');
-			}
-	
-			// Get secrets for auth
-			const secrets = await this.getCharacterSecrets(character.id);
-	
-			// Import the TwitterClientInterface
-			const { TwitterClientInterface } = await import('./twitter-client/index.js');
-	
-			// Create runtime settings object from secrets
-			const runtime = {
-				settings: {
-					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
-					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
-					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies),
-					TELEGRAM_BOT_TOKEN: secrets.modelKeys.telegram_token
-				}
-			};
-	
-			// Initialize the Twitter client using the interface
-			const client = await TwitterClientInterface.start(runtime);
-	
-			// Classify the tweet
-			const classification = await client.classifyTweet(text);
-	
-			return new Response(JSON.stringify({
-				success: true,
-				classification
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-	
-		} catch (error) {
-			console.error('Twitter classification error:', error);
-			return new Response(JSON.stringify({
-				error: error.message,
-				details: error.stack
-			}), {
-				status: error.message.includes('not found') ? 404 : 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		}
-	}
-	
-	async handleTwitterPostWithMedia(request) {
-		try {
-			const formData = await request.formData();
-			const userId = formData.get('userId');
-			const characterName = formData.get('characterName');
-			const tweet = formData.get('tweet');
-			const sessionId = formData.get('sessionId');
-			const roomId = formData.get('roomId');
-			const nonce = formData.get('nonce');
-			const mediaFiles = formData.getAll('media');
-	
-			const character = await this.getCharacter(userId, characterName);
-			if (!character) {
-				throw new Error('Character not found');
-			}
-	
-			// Get secrets for auth
-			const secrets = await this.getCharacterSecrets(character.id);
-	
-			// Import the TwitterClientInterface
-			const { TwitterClientInterface } = await import('./twitter-client/index.js');
-	
-			// Create runtime settings object from secrets
-			const runtime = {
-				settings: {
-					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
-					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
-					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies),
-					TELEGRAM_BOT_TOKEN: secrets.modelKeys.telegram_token
-				}
-			};
-	
-			// Initialize the Twitter client using the interface
-			const client = await TwitterClientInterface.start(runtime);
-	
-			// Process media files
-			const mediaData = await Promise.all(mediaFiles.map(async (file) => {
-				const arrayBuffer = await file.arrayBuffer();
-				return {
-					data: Buffer.from(arrayBuffer),
-					mediaType: file.type
-				};
-			}));
-	
-			// Send the tweet with media
-			const result = await client.sendTweet(tweet, null, mediaData);
-
-			// Create a memory for this tweet
-			const memory = {
-				content: tweet,
-				type: 'post-tweet',
-				agentId: character.id,
-				userId,
-				sessionId,
-				roomId,
-				createdAt: new Date().toISOString(),
-				metadata: {
-					hasMedia: true,
-					mediaCount: mediaFiles.length
-				}
-			};
-
-			await this.runtime.databaseAdapter.createMemory(memory);
-	
-			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
-	
-			return new Response(JSON.stringify({
-				success: true,
-				tweet: result,
-				nonce: newNonce.nonce
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-	
-		} catch (error) {
-			console.error('Twitter post with media error:', error);
-			return new Response(JSON.stringify({
-				error: error.message,
-				details: error.stack
-			}), {
-				status: error.message.includes('not found') ? 404 : 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-		}
-	}
-	
-	async handleDeleteMemory(request) {
-		try {
-			const { sessionId, memoryId, username } = await request.json();
-			console.log('[CharacterRegistryDO.handleDeleteMemory] Request params:', {
-				sessionId,
-				memoryId,
-				username
-			});
-
-			if (!this.memoryAdapter) {
-				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
-				await this.memoryAdapter.initializeSchema();
-			}
-
-			// First get the memory to verify ownership
-			const memory = await this.memoryAdapter.getMemoryById(memoryId);
-			if (!memory) {
-				return new Response(JSON.stringify({
-					error: 'Memory not found',
-					details: `No memory found with ID ${memoryId}`
-				}), { 
-					status: 404,
-					headers: { 'Content-Type': 'application/json' }
-				});
-			}
-
-			console.log('[CharacterRegistryDO.handleDeleteMemory] Found memory:', {
-				id: memory.id,
-				agentId: memory.agentId,
-				userId: memory.userId
-			});
-
-			// Extract the base character ID by removing the decimal part
-			const characterId = memory.agentId.split('.')[0];
-			console.log('[CharacterRegistryDO.handleDeleteMemory] Looking up character:', {
-				characterId,
-				originalAgentId: memory.agentId,
-				username
-			});
-
-			// Get character by ID and verify ownership
-			const characters = await this.sql.exec(`
-					SELECT * FROM characters WHERE id = ? LIMIT 1
-				`, characterId).toArray();
-
-			if (!characters.length) {
-				return new Response(JSON.stringify({
-					error: 'Character not found',
-					details: 'Associated character no longer exists'
-				}), { 
-					status: 404,
-					headers: { 'Content-Type': 'application/json' }
-				});
-			}
-
-			const character = characters[0];
-			console.log('[CharacterRegistryDO.handleDeleteMemory] Found character:', {
-				id: character.id,
-				author: character.author,
-				requestingUser: username,
-				fields: Object.keys(character)
-			});
-
-			// Verify character ownership using 'author' field
-			if (character.author !== username) {
-				return new Response(JSON.stringify({
-					error: 'Unauthorized',
-					details: 'You do not have permission to delete this character\'s memories'
-				}), {
-					status: 403,
-					headers: { 'Content-Type': 'application/json' }
-				});
-			}
-
-			const success = await this.memoryAdapter.deleteMemory(memoryId);
-			if (!success) {
-				return new Response(JSON.stringify({
-					error: 'Failed to delete memory'
-				}), { 
-					status: 500,
-					headers: { 'Content-Type': 'application/json' }
-				});
-			}
-
-			return new Response(JSON.stringify({ success: true }), {
-				headers: { 'Content-Type': 'application/json' }
-			});
-		} catch (error) {
-			console.error('[CharacterRegistryDO.handleDeleteMemory] Error:', {
-				message: error.message,
-				stack: error.stack
-			});
-			return new Response(JSON.stringify({
-				error: 'Internal server error',
-				details: error.message
-			}), { 
-				status: 500,
-				headers: { 'Content-Type': 'application/json' }
-			});
-		}
-	}
-
-	async handleFindMemory(request) {
-		try {
-			const { sessionId, query, agentId, username } = await request.json();
-			console.log('[CharacterRegistryDO.handleFindMemory] Request params:', { 
-				sessionId, 
-				query,
-				agentId,
-				username,
-			});
-
-			// First verify the character exists and belongs to the user
-			const character = await this.getCharacter(username, agentId);
-			if (!character) {
-				return new Response(JSON.stringify({ 
-					error: 'Character not found',
-					details: 'Invalid character or unauthorized access'
-				}), { status: 404 });
-			}
-
-			// Initialize memory adapter if needed
-			if (!this.memoryAdapter) {
-				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
-			}
-
-			// Search for memories but only for this specific agent
-			const memories = await this.memoryAdapter.findMemories(query, {
-				agentId: character.slug,  // Use numeric ID instead of slug
-				userId: username
-			});
-
-			console.log('[CharacterRegistryDO.handleFindMemory] Found memories:', { 
-				count: memories.length,
-				query,
-				agentId: character.id  // Update log to show numeric ID
-			});
-
-			return new Response(JSON.stringify(memories), {
-				headers: { 'Content-Type': 'application/json' }
-			});
-		} catch (error) {
-			console.error('[CharacterRegistryDO.handleFindMemory] Error:', {
-				message: error.message,
-				stack: error.stack
-			});
-			return new Response(JSON.stringify({ 
-				error: 'Internal server error',
-				details: error.message 
-			}), { status: 500 });
-		}
-	}
-	
-	async handleUpdateMemory(request) {
-		try {
-			const { sessionId, memoryId, content, type, userId, importance_score = 0, username } = await request.json();
-			console.log('[handleUpdateMemory] Request params:', { 
-				memoryId, 
-				type,
-				userId,
-				importance_score,
-				contentSample: content ? JSON.stringify(content).slice(0, 100) + '...' : 'No content'
-			});
-
-			if (!this.memoryAdapter) {
-				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
-			}
-
-			// First get the memory to verify ownership
-			const memory = await this.memoryAdapter.getMemoryById(memoryId);
-			if (!memory) {
-				return new Response(JSON.stringify({
-					error: 'Memory not found',
-					details: `No memory found with ID ${memoryId}`
-				}), { status: 404 });
-			}
-
-			// Get the character to verify ownership
-			const characters = await this.sql.exec(`
-				SELECT * FROM characters WHERE id = ? LIMIT 1
-			`, memory.agentId).toArray();
-
-			if (!characters.length) {
-				return new Response(JSON.stringify({
-					error: 'Character not found',
-					details: 'Associated character no longer exists'
-				}), { status: 404 });
-			}
-
-			const character = characters[0];
-			
-			// Verify character ownership
-			if (character.owner !== username) {
-				return new Response(JSON.stringify({
-					error: 'Unauthorized',
-					details: 'You do not have permission to update this character\'s memories'
-				}), {
-					status: 403,
-					headers: { 'Content-Type': 'application/json' }
-				});
-			}
-
-			// Keep existing content structure but update the values
-			const existingContent = typeof memory.content === 'string' ? JSON.parse(memory.content) : memory.content;
-			const updatedContent = typeof content === 'string' ? JSON.parse(content) : content;
-			const mergedContent = {
-				...existingContent,
-				...updatedContent
-			};
-
-			const success = await this.memoryAdapter.updateMemory({
-				id: memoryId,
-				type: type || memory.type,
-				content: JSON.stringify(mergedContent),
-				userId: userId || memory.userId,
-				importance_score: importance_score || memory.importance_score || 0,
-				metadata: memory.metadata // Keep existing metadata unchanged
-			});
-
-			if (!success) {
-				return new Response(JSON.stringify({
-					error: 'Failed to update memory',
-					details: 'Database update failed'
-				}), { status: 500 });
-			}
-
-			// Fetch and return the updated memory
-			const updatedMemory = await this.memoryAdapter.getMemoryById(memoryId);
-			return new Response(JSON.stringify(updatedMemory), {
-				headers: { 'Content-Type': 'application/json' }
-			});
-		} catch (error) {
-			console.error('[handleUpdateMemory] Error:', error);
-			return new Response(JSON.stringify({
-				error: 'Failed to update memory',
-				details: error.message
-			}), { status: 500 });
-		}
-	}
-	
-	async handleMemoryList(request) {
-		try {
-			const { slug, sessionId, type, username } = await request.json();
-			console.log('[CharacterRegistryDO] Memory list params:', { slug, sessionId, type, username });
-
-			// Initialize memory adapter if not already done
-			if (!this.memoryAdapter) {
-				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
-					await this.memoryAdapter.initializeSchema();
-			}
-
-			// Get character by slug
-			const characters = await this.sql.exec(`
-				SELECT * FROM characters WHERE slug = ? LIMIT 1
-			`, slug).toArray();
-
-			if (!characters.length) {
-				return new Response(JSON.stringify({
-					error: 'Character not found',
-					details: `No character found with slug: ${slug}`
-				}), {
-					status: 404,
-					headers: { 'Content-Type': 'application/json' }
-				});
-			}
-
-			const character = characters[0];
-			
-			// Verify character ownership using 'author' field instead of 'owner'
-			if (character.author !== username) {
-				return new Response(JSON.stringify({
-					error: 'Unauthorized',
-					details: 'You do not have permission to access this character\'s memories'
-				}), {
-					status: 403,
-					headers: { 'Content-Type': 'application/json' }
-				});
-			}
-
-			console.log('[CharacterRegistryDO] Found character:', { id: character.id, slug: character.slug });
-
-			// Get memories using character ID
-			const memories = await this.memoryAdapter.getAllMemoriesByCharacter(character.id, {
-				type: type === 'all' ? null : type
-			});
-
-			console.log('[CharacterRegistryDO] Memory list result:', {
-					count: memories.length,
-					types: memories.length > 0 ? [...new Set(memories.map(m => m.type))] : []
-			});
-
-			return new Response(JSON.stringify(memories), {
-				headers: { 'Content-Type': 'application/json' }
-			});
-		} catch (error) {
-			console.error('[CharacterRegistryDO] Memory list error:', {
-				message: error.message,
-				stack: error.stack
-			});
-			return new Response(JSON.stringify({
-				error: 'Failed to retrieve memories',
-				details: error.message
-			}), {
-				status: 500,
-				headers: { 'Content-Type': 'application/json' }
-			});
-		}
-	}
-
-	async handleInternalMemoryList(request) {
-		try {
-			const { characterId, type } = await request.json();
-			console.log('[CharacterRegistryDO] Memory list params:', { characterId, type });
-
-			if (!this.memoryAdapter) {
-				this.memoryAdapter = new EnhancedSQLiteMemoryAdapter(this.sql);
-				await this.memoryAdapter.initializeSchema();
-			}
-
-			const memories = await this.memoryAdapter.getAllMemoriesByCharacter(characterId, {
-				type: type === 'all' ? null : type
-			});
-
-			console.log('[CharacterRegistryDO] Memory list result:', {
-				count: memories.length,
-				types: memories.length > 0 ? [...new Set(memories.map(m => m.type))] : []
-			});
-
-			return new Response(JSON.stringify(memories), {
-				headers: { 'Content-Type': 'application/json' }
-			});
-		} catch (error) {
-			console.error('[CharacterRegistryDO] Memory list error:', {
-				message: error.message,
-				stack: error.stack
-			});
-			return new Response(JSON.stringify({
-				error: 'Failed to retrieve memories',
-				details: error.message
-			}), {
-				status: 500,
-				headers: { 'Content-Type': 'application/json' }
-			});
-		}
-	}
-
-	async handleGetSession(request) {
-		try {
-			const { sessionId } = await request.json();
-			console.log('[handleGetSession] Getting session:', sessionId);
-
-			const session = this.#sessions.get(sessionId);
-			if (!session) {
-				throw new Error('Session not found');
-			}
-
-			console.log('[handleGetSession] Found session:', {
-				sessionId,
-				characterId: session.character.id,
-				roomId: session.roomId
-			});
-
-			return new Response(JSON.stringify({
-				sessionId,
-				characterId: session.character.id,
-				roomId: session.roomId
-			}), {
-				headers: { 'Content-Type': 'application/json' }
-			});
-		} catch (error) {
-			console.error('[handleGetSession] Error:', {
-				message: error.message,
-				stack: error.stack
-			});
-			return new Response(JSON.stringify({
-				error: 'Session not found',
-				details: error.message
-			}), {
-				status: 404,
-				headers: { 'Content-Type': 'application/json' }
-			});
-		}
-	}
 
 	async fetch(request) {
-			const url = new URL(request.url);
-		const path = url.pathname;
-		
-		console.log('[CharacterRegistryDO] Handling request:', {
-			path,
-			method: request.method
-		});
+		if (request.method === "GET") {
+			return new Response("Method not allowed", { status: 405 });
+		}
 
-		switch (path) {
+		if (request.method === "POST") {
+			const url = new URL(request.url);
+
+			switch (url.pathname) {
+				case '/export-character': {
+					return await this.handleCharacterExport(request);
+				}
+				case '/import-character': {
+					if (request.method !== 'POST') {
+						return new Response('Method not allowed', { status: 405 });
+					}
+					return await this.handleCharacterImport(request);
+				}
 				case '/migrate-schema': {
 					return await this.handleMigrateSchema();
 				}
-				case '/api/telegram/messages': {
-					return await this.handleTelegramMessages(request);
+				case '/handle-delete-memory': {
+					return await this.handleDeleteMemory(request);
 				}
-				case '/api/telegram/message': {
-					return await this.handleTelegramMessage(request);
+				case '/handle-find-memory': {
+					return await this.handleFindMemory(request);
 				}
-				case '/api/telegram/reply': {
-					return await this.handleTelegramReply(request);
+				case '/handle-update-memory': {
+					return await this.handleUpdateMemory(request);
 				}
-				case '/api/telegram/edit': {
-					return await this.handleTelegramEdit(request);
+				case '/handle-memory-list': {
+					return await this.handleMemoryList(request);
 				}
-				case '/api/telegram/pin': {
-					return await this.handleTelegramPin(request);
+				case '/memory-list': {
+					return this.handleInternalMemoryList(request);
 				}
-				case '/get-my-telegram-credentials': {
-					return await this.handleTelegramCredentials(request);
+				case '/get-session': {
+					return await this.handleGetSession(request);
 				}
 				case '/send-chat-message': {
 					const { sessionId, message, nonce, apiKey } = await request.json();
@@ -4053,32 +3106,6 @@ export class CharacterRegistryDO {
 						});
 					}
 				}
-				case '/get-telegram-credentials': {
-					return await this.handleTelegramCredentials(request);
-				}
-
-				case '/telegram-updates': {
-					return await this.handleTelegramUpdates(request);
-				}
-
-				case '/telegram-reply': {
-					return await this.handleTelegramReply(request);
-				}
-
-				case '/telegram-edit': {
-					return await this.handleTelegramEdit(request);
-				}
-
-				case '/telegram-pin': {
-					return await this.handleTelegramPin(request);
-				}
-				case '/telegram-messages': {
-					return await this.handleTelegramMessages(request);
-				}
-				case '/telegram-message': {
-					return await this.handleTelegramMessage(request);
-				}
-
 				case '/send-message': {
 					const { sessionId, message, nonce, apiKey } = await request.json();
 					if (!sessionId || !message) {
@@ -4473,104 +3500,11 @@ export class CharacterRegistryDO {
 						});
 					}
 				}
-				case '/handle-twitter-classify': {
-					return await this.handleTwitterClassify(request);
-				}
-				case '/handle-twitter-post-with-media': {
-					return await this.handleTwitterPostWithMedia(request);
-				}
-				case '/handle-delete-memory': {
-					return await this.handleDeleteMemory(request);
-				}
-				case '/handle-find-memory': {
-					return await this.handleFindMemory(request);
-				}
-				case '/handle-update-memory': {
-					return await this.handleUpdateMemory(request);
-				}
-				case '/handle-memory-list': {
-					return await this.handleMemoryList(request);
-				}
-			case '/memory-list': {
-				return this.handleInternalMemoryList(request);
-			}
-			case '/get-session': {
-				return await this.handleGetSession(request);
-			}
 				default:
 					return new Response('Not found', { status: 404 });
-		}
-	}
-
-	async handleTwitterPost(request) {
-		try {
-			const { userId, characterName, tweet, sessionId, roomId, nonce } = await request.json();
-			const character = await this.getCharacter(userId, characterName);
-			if (!character) {
-				throw new Error('Character not found');
 			}
-
-			// Get secrets for auth
-			const secrets = await this.getCharacterSecrets(character.id);
-
-			// Import the TwitterClientInterface instead of Scraper directly
-			const { TwitterClientInterface } = await import('./twitter-client/index.js');
-
-			// Create runtime settings object from secrets
-			const runtime = {
-				settings: {
-					TWITTER_USERNAME: secrets.modelKeys.TWITTER_USERNAME,
-					TWITTER_PASSWORD: secrets.modelKeys.TWITTER_PASSWORD,
-					TWITTER_EMAIL: secrets.modelKeys.TWITTER_EMAIL,
-					TWITTER_COOKIES: JSON.stringify(secrets.modelKeys.twitter_cookies),
-					TELEGRAM_BOT_TOKEN: secrets.modelKeys.telegram_token
-				}
-			};
-
-			// Initialize the Twitter client using the interface
-			const client = await TwitterClientInterface.start(runtime);
-
-			// Send the tweet
-			const result = await client.sendTweet(tweet);
-
-			// Create a memory for this tweet
-			const memory = {
-				content: tweet,
-				type: 'post-tweet',
-				agentId: character.id,
-				userId,
-				sessionId,
-				roomId,
-				createdAt: new Date().toISOString()
-			};
-
-			await this.runtime.databaseAdapter.createMemory(memory);
-
-			const newNonce = await this.nonceManager.createNonce(roomId, sessionId);
-
-			return new Response(JSON.stringify({
-				success: true,
-				tweet: result,
-				nonce: newNonce.nonce
-			}), {
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
-
-		} catch (error) {
-			console.error('Internal Twitter post error:', error);
-			return new Response(JSON.stringify({
-				error: error.message,
-				details: error.stack
-			}), {
-				status: error.message.includes('not found') ? 404 : 500,
-				headers: {
-					...CORS_HEADERS,
-					'Content-Type': 'application/json'
-				}
-			});
 		}
+
+		return new Response('Method not allowed', { status: 405 });
 	}
 }

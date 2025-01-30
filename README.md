@@ -85,6 +85,198 @@ The `wrangler.toml` file contains the configuration for your worker and R2 bucke
 - `/api/character/memory`: Create memory for character
 - `/api/character/memories`: Get character memories
 - `/api/character/memories/by-rooms`: Get memories across multiple rooms
+- `/api/character/find-memory`: Search character memories
+- `/api/character/delete-memory`: Delete a specific memory
+- `/api/character/update-memory`: Update an existing memory
+
+## Memory Management System
+
+The system includes a comprehensive memory management system for characters that supports various operations:
+
+### Memory Endpoints
+
+#### Create Memory
+- Endpoint: `POST /api/character/memory`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "sessionId": "string",
+    "content": {
+      "text": "string",
+      "model": "string"
+    },
+    "type": "string",
+    "userId": "string",
+    "userName": "string",
+    "roomId": "string",
+    "agentId": "string",
+    "isUnique": boolean,
+    "importance_score": number
+  }
+  ```
+- Response: 
+  ```json
+  {
+    "success": true,
+    "memory": {
+      "id": "string",
+      "type": "string",
+      "content": {
+        "text": "string",
+        "model": "string"
+      },
+      "createdAt": number
+    }
+  }
+  ```
+
+#### Find Memories
+- Endpoint: `POST /api/character/find-memory`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "sessionId": "string",
+    "query": "string",
+    "agentId": "string"
+  }
+  ```
+- Response: 
+  ```json
+  {
+    "memories": [
+      {
+        "id": "string",
+        "type": "string",
+        "content": {
+          "text": "string",
+          "model": "string"
+        },
+        "createdAt": number,
+        "importance_score": number
+      }
+    ]
+  }
+  ```
+
+#### List Memories
+- Endpoint: `POST /api/character/memories`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "slug": "string",
+    "sessionId": "string",
+    "type": "string"
+  }
+  ```
+- Response: Array of memory objects
+
+#### Delete Memory
+- Endpoint: `POST /api/character/delete-memory`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "sessionId": "string",
+    "memoryId": "string"
+  }
+  ```
+- Response:
+  ```json
+  {
+    "success": true
+  }
+  ```
+
+#### Update Memory
+- Endpoint: `POST /api/character/update-memory`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "sessionId": "string",
+    "memoryId": "string",
+    "content": {
+      "text": "string",
+      "model": "string"
+    },
+    "type": "string",
+    "importance_score": number
+  }
+  ```
+- Response:
+  ```json
+  {
+    "success": true,
+    "memory": {
+      "id": "string",
+      "type": "string",
+      "content": {
+        "text": "string",
+        "model": "string"
+      },
+      "importance_score": number,
+      "updatedAt": number
+    }
+  }
+  ```
+
+### Memory Schema
+```sql
+CREATE TABLE memories (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    userId TEXT,
+    userName TEXT,
+    roomId TEXT,
+    agentId TEXT NOT NULL,
+    isUnique INTEGER DEFAULT 0,
+    createdAt INTEGER NOT NULL,
+    importance_score REAL DEFAULT 0,
+    access_count INTEGER DEFAULT 0,
+    last_accessed INTEGER,
+    metadata TEXT,
+    FOREIGN KEY(agentId) REFERENCES characters(slug)
+);
+```
+
+### Memory Types
+The system supports various memory types:
+- `message`: Standard conversation messages
+- `reflection`: Character's internal thoughts/reflections
+- `fact`: Important facts about users or context
+- `summary`: Conversation summaries
+- `custom`: User-defined memory types
+
+### Memory Security
+The memory system implements several security measures:
+1. API key authentication for all endpoints
+2. Character ownership verification
+3. User-specific memory access control
+4. Public vs private memory separation
+5. Secure memory deletion with ownership checks
+
+### Memory Search Features
+The search functionality includes:
+1. Full-text search within memory content
+2. Case-insensitive matching
+3. Character-specific scoping
+4. User-specific filtering
+5. Type-based filtering
+6. Importance score consideration
+7. Room-based context filtering
+
+### Best Practices for Memory Management
+1. Regularly clean up old or unused memories
+2. Use appropriate memory types for different content
+3. Set reasonable importance scores
+4. Implement proper error handling
+5. Monitor memory usage and performance
+6. Regular backups of critical memories
+7. Proper security checks before operations
 
 ## Authentication System
 
