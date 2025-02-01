@@ -1,10 +1,5 @@
 # World and Character Management System
 
-If this helps you and you want to tip to fund future development, feel free to use the following wallet addresses
-### SOL: 5h7YzknKdQKA9QxiZKdt3X5JpjVAyoTEQUroaRGuphAx
-
-### ETH: 0x94899E0Cc3115D7761EeCd9bBc04D8eBff9de871
-
 ## Overview
 
 The World and Character Management System is a comprehensive solution built on Cloudflare Workers and R2 storage, designed to handle both virtual world publishing and AI character management. This system provides endpoints for managing worlds (3D environments), user authentication, and interactive AI characters.
