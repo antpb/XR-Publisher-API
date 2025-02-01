@@ -291,6 +291,11 @@ binding = "CHARACTER_BACKUPS"
 bucket_name = "${project_name}-character-backups"
 preview_bucket_name = "${project_name}-character-backups-preview"
 
+[[r2_buckets]]
+binding = "ITEMS_BUCKET"
+bucket_name = "${project_name}-items"
+preview_bucket_name = "${project_name}-items-preview"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
 EOL
@@ -315,6 +320,14 @@ if [[ $output != *"Created bucket"* ]]; then
     exit 1
 fi
 echo "Character backups R2 bucket created successfully."
+
+# Create items bucket
+output=$(npx wrangler r2 bucket create "${project_name}-items" 2>&1)
+if [[ $output != *"Created bucket"* ]]; then
+    echo "Error creating items R2 bucket: $output"
+    exit 1
+fi
+echo "Items R2 bucket created successfully."
 
 # Set CORS rules for the main bucket
 echo "Setting CORS rules for the buckets..."
@@ -343,7 +356,15 @@ if [[ $output == *"Error"* ]]; then
     echo "Error setting CORS rules for character backups bucket: $output"
     exit 1
 fi
-echo "CORS rules set successfully for both buckets."
+
+# Apply CORS rules to items bucket
+output=$(npx wrangler r2 bucket cors put "${project_name}-items" --rules ./cors-rules.json 2>&1)
+if [[ $output == *"Error"* ]]; then
+    echo "Error setting CORS rules for items bucket: $output"
+    exit 1
+fi
+
+echo "CORS rules set successfully for all buckets."
 
 # Rest of the setup (API secrets, deployment, etc.)
 api_secret=$(generate_random_string 32)

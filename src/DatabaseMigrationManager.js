@@ -194,4 +194,63 @@ export class DatabaseMigrationManager {
             throw error;
         }
     }
+
+    async migrateAssetSchema() {
+        try {
+            await this.sql.exec('PRAGMA foreign_keys = OFF;');
+
+            // Create character_assets table
+            await this.sql.exec(`
+                CREATE TABLE IF NOT EXISTS character_assets (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    character_id INTEGER NOT NULL,
+                    filename TEXT NOT NULL,
+                    original_filename TEXT NOT NULL,
+                    filesize INTEGER NOT NULL,
+                    file_type TEXT NOT NULL,
+                    file_url TEXT NOT NULL,
+                    thumb_url TEXT,
+                    tags TEXT,
+                    categories TEXT,
+                    metadata TEXT,
+                    background TEXT,
+                    status TEXT DEFAULT 'active',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(character_id) REFERENCES characters(id),
+                    UNIQUE(character_id, filename)
+                )
+            `);
+
+            // Create character_asset_chunks table for handling chunked uploads
+            await this.sql.exec(`
+                CREATE TABLE IF NOT EXISTS character_asset_chunks (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    character_id INTEGER NOT NULL,
+                    upload_id TEXT NOT NULL,
+                    chunk_number INTEGER NOT NULL,
+                    total_chunks INTEGER NOT NULL,
+                    chunk_data BLOB NOT NULL,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    FOREIGN KEY(character_id) REFERENCES characters(id),
+                    UNIQUE(upload_id, chunk_number)
+                )
+            `);
+
+            // Create indexes
+            await this.sql.exec(`
+                CREATE INDEX IF NOT EXISTS idx_assets_character ON character_assets(character_id);
+                CREATE INDEX IF NOT EXISTS idx_assets_status ON character_assets(status);
+                CREATE INDEX IF NOT EXISTS idx_assets_type ON character_assets(file_type);
+                CREATE INDEX IF NOT EXISTS idx_asset_chunks_upload ON character_asset_chunks(upload_id);
+            `);
+
+            await this.sql.exec('PRAGMA foreign_keys = ON;');
+            return true;
+        } catch (error) {
+            console.error('Error in asset schema migration:', error);
+            await this.sql.exec('PRAGMA foreign_keys = ON;');
+            throw error;
+        }
+    }
 } 
