@@ -388,6 +388,357 @@ The search functionality includes:
 6. Regular backups of critical memories
 7. Proper security checks before operations
 
+## Social Media Integration
+
+### Twitter Endpoints
+
+#### Post Tweet
+- Endpoint: `POST /api/twitter/post`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "tweet": "string",
+    "sessionId": "string",
+    "roomId": "string",
+    "nonce": "string"
+  }
+  ```
+
+#### Post Tweet with Media
+- Endpoint: `POST /api/twitter/post-with-media`
+- Authentication: Required
+- Request Body: FormData containing:
+  - `userId`: Character owner's ID
+  - `characterName`: Character's name
+  - Media file(s)
+
+#### Get Twitter Notifications
+- Endpoint: `POST /api/twitter/notifications`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "sessionId": "string",
+    "roomId": "string",
+    "nonce": "string"
+  }
+  ```
+
+#### Retweet
+- Endpoint: `POST /api/twitter/retweet`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "tweetId": "string",
+    "quoteText": "string"
+  }
+  ```
+
+#### Reply to Tweet
+- Endpoint: `POST /api/twitter/reply`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "tweetId": "string",
+    "replyText": "string"
+  }
+  ```
+
+#### Like Tweet
+- Endpoint: `POST /api/twitter/like`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "tweetId": "string"
+  }
+  ```
+
+#### Classify Tweet Content
+- Endpoint: `POST /api/twitter/classify`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "text": "string"
+  }
+  ```
+
+#### Get Twitter Credentials
+- Endpoint: `POST /get-my-twitter-credentials`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+
+### Telegram Endpoints
+
+#### Send Message
+- Endpoint: `POST /api/telegram/message`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "chatId": "string",
+    "message": "string",
+    "sessionId": "string",
+    "roomId": "string",
+    "nonce": "string"
+  }
+  ```
+
+#### Get Updates
+- Endpoint: `POST /api/telegram/updates`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "sessionId": "string",
+    "roomId": "string",
+    "nonce": "string"
+  }
+  ```
+
+#### Reply to Message
+- Endpoint: `POST /api/telegram/reply`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "messageId": "string",
+    "replyText": "string",
+    "chatId": "string",
+    "sessionId": "string",
+    "roomId": "string",
+    "nonce": "string"
+  }
+  ```
+
+#### Edit Message
+- Endpoint: `POST /api/telegram/edit`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "messageId": "string",
+    "newText": "string",
+    "chatId": "string",
+    "sessionId": "string",
+    "roomId": "string",
+    "nonce": "string"
+  }
+  ```
+
+#### Pin Message
+- Endpoint: `POST /api/telegram/pin`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "messageId": "string",
+    "chatId": "string",
+    "sessionId": "string",
+    "roomId": "string",
+    "nonce": "string"
+  }
+  ```
+
+#### Get Messages
+- Endpoint: `POST /api/telegram/messages`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "chatId": "string",
+    "sessionId": "string",
+    "roomId": "string",
+    "nonce": "string"
+  }
+  ```
+
+#### Get Telegram Credentials
+- Endpoint: `POST /get-my-telegram-credentials`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+
+## Discord Integration
+
+#### Get Discord Credentials
+- Endpoint: `POST /discord-credentials`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+
+#### Handle Discord Interactions
+- Endpoint: `POST /interactions`
+- Authentication: Not Required
+- Headers Required:
+  - `x-signature-ed25519`
+  - `x-signature-timestamp`
+- Request Body: Discord interaction payload
+
+#### Initialize Discord Bot
+- Endpoint: `POST /discord/init`
+- Authentication: Not Required
+- Request Body:
+  ```json
+  {
+    "applicationId": "string"
+  }
+  ```
+
+#### Check Discord Bot Status
+- Endpoint: `POST /discord/check`
+- Authentication: Not Required
+- Request Body:
+  ```json
+  {
+    "applicationId": "string"
+  }
+  ```
+
+## Vision and AI Endpoints
+
+#### Generate Character
+- Endpoint: `POST /generate-character`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "prompt": "string"
+  }
+  ```
+
+#### Describe Image
+- Endpoint: `POST /api/vision/describe`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "image": "string" // URL of the image
+  }
+  ```
+
+## Character Import/Export
+
+#### Export Character
+- Endpoint: `POST /api/character/export`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+
+#### Import New Character
+- Endpoint: `POST /api/character/import-new`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "importData": {
+      "character": {
+        "name": "string",
+        "model_provider": "string",
+        "status": "string",
+        "bio": "string",
+        // ... other character fields
+      }
+    }
+  }
+  ```
+
+## System Management Endpoints
+
+#### Migrate Data
+- Endpoint: `POST /migrate-data`
+- Authentication: Required (Admin)
+
+#### Migrate Authors
+- Endpoint: `POST /migrate-authors`
+- Authentication: Required (Admin)
+
+#### Migrate Character Schema
+- Endpoint: `POST /migrate-character-schema`
+- Authentication: Required (Admin)
+
+#### Clear Cache
+- Endpoint: `POST /clear-cache`
+- Authentication: Required (Admin)
+
+#### Record Visit
+- Endpoint: `POST /record-visit`
+- Authentication: Not Required
+- Query Parameters:
+  - `author`: Author name
+  - `slug`: World slug
+
+#### Upload Character Image
+- Endpoint: `POST /upload-character-image`
+- Authentication: Required
+- Request Body: FormData containing image file
+
+#### Update Character Keys
+- Endpoint: `POST /update-character-keys`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "keys": {
+      // API keys and credentials
+    }
+  }
+  ```
+
 ## Authentication System
 
 ### Public Endpoints

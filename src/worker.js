@@ -172,21 +172,41 @@ export default {
 
 	async scheduled(controller, env, ctx) {
 		try {
-			if (!env.VISIT_COUNTS || !env.WORLD_REGISTRY) {
-				console.error('Missing required KV namespaces');
-				return;
-			}
+			// Log all cron triggers for debugging
+			console.log('Cron triggered:', {
+				pattern: controller.cron,
+				scheduledTime: new Date().toISOString(),
+				hasCharacterRegistry: !!env.CHARACTER_REGISTRY,
+				hasBackupBucket: !!env.CHARACTER_BACKUPS
+			});
 
-			// Process visit queues
-			await this.processVisitQueues(env);
+			// Handle daily character backups at 22:07 UTC
+			if (controller.cron === "25 23 * * *") {
+				console.log('Starting daily character backup at 23:25 UTC');
+				if (!env.CHARACTER_REGISTRY || !env.CHARACTER_BACKUPS) {
+					console.error('Missing required bindings for character backup:', {
+						hasRegistry: !!env.CHARACTER_REGISTRY,
+						hasBackupBucket: !!env.CHARACTER_BACKUPS
+					});
+					return;
+				}
 
-			// Check if this is the daily backup cron (runs at midnight UTC)
-			if (controller.cron === "0 0 * * *") {
+				// Get registry instance
+				const id = env.CHARACTER_REGISTRY.idFromName("global");
+				const registry = env.CHARACTER_REGISTRY.get(id);
+				console.log('Got CHARACTER_REGISTRY instance');
+
 				await this.handleDailyCharacterBackups(env);
+				console.log('Completed daily character backup');
+			} else {
+				console.log('Skipping backup - cron pattern does not match expected "7 22 * * *"');
 			}
-
 		} catch (error) {
-			console.error('Scheduled task error:', error);
+			console.error('Scheduled task error:', {
+				message: error.message,
+				stack: error.stack,
+				time: new Date().toISOString()
+			});
 		}
 	},
 
@@ -238,11 +258,14 @@ export default {
 
 	async handleDailyCharacterBackups(env) {
 		try {
-			// Get all characters from registry
+			console.log('Starting handleDailyCharacterBackups');
+			
+			// Get registry instance
 			const id = env.CHARACTER_REGISTRY.idFromName("global");
 			const registry = env.CHARACTER_REGISTRY.get(id);
 
 			// List all authors
+			console.log('Listing authors from WORLD_BUCKET');
 			const authorsList = await env.WORLD_BUCKET.list();
 			const authors = new Set();
 			for (const item of authorsList.objects) {
@@ -251,6 +274,7 @@ export default {
 					authors.add(parts[0]);
 				}
 			}
+			console.log(`Found ${authors.size} authors to process`);
 
 			const currentDate = new Date().toISOString().split('T')[0];
 			const oneWeekAgo = new Date();
@@ -259,19 +283,27 @@ export default {
 
 			// Process each author
 			for (const author of authors) {
+				console.log(`Processing author: ${author}`);
+				
 				// Get all characters for this author
 				const response = await registry.fetch(new Request('http://internal/get-author-characters', {
 					method: 'POST',
 					body: JSON.stringify({ author })
 				}));
 
-				if (!response.ok) continue;
+				if (!response.ok) {
+					console.error(`Failed to get characters for author ${author}:`, await response.text());
+					continue;
+				}
 
 				const characters = await response.json();
+				console.log(`Found ${characters.length} characters for author ${author}`);
 
 				// Export and backup each character
 				for (const character of characters) {
 					try {
+						console.log(`Processing character: ${character.slug}`);
+						
 						// Export character data
 						const exportResponse = await registry.fetch(new Request('http://internal/export-character', {
 							method: 'POST',
@@ -281,38 +313,55 @@ export default {
 							})
 						}));
 
-						if (!exportResponse.ok) continue;
+						if (!exportResponse.ok) {
+							console.error(`Failed to export character ${character.slug}:`, await exportResponse.text());
+							continue;
+						}
 
 						const exportData = await exportResponse.json();
+						console.log(`Successfully exported character ${character.slug}`);
 
 						// Store in backup bucket with date and encrypted filename
-						const backupKey = `${author}/${character.slug}/${currentDate}-${crypto.randomUUID()}.json`;
+						const backupKey = `${author}/${character.slug}/automatic/${currentDate}-${crypto.randomUUID()}.json`;
 						await env.CHARACTER_BACKUPS.put(backupKey, JSON.stringify(exportData), {
 							httpMetadata: {
 								contentType: 'application/json',
 								cacheControl: 'private, no-cache'
 							}
 						});
+						console.log(`Created backup at key: ${backupKey}`);
 
 						// Clean up old backups for this character
 						const oldBackups = await env.CHARACTER_BACKUPS.list({
-							prefix: `${author}/${character.slug}/`
+							prefix: `${author}/${character.slug}/automatic/`
 						});
 
+						let deletedCount = 0;
 						for (const backup of oldBackups.objects) {
 							const backupDate = backup.key.split('/')[2].split('-')[0]; // Extract date from key
 							if (backupDate < cutoffDate) {
 								await env.CHARACTER_BACKUPS.delete(backup.key);
+								deletedCount++;
 							}
 						}
+						console.log(`Cleaned up ${deletedCount} old backups for ${character.slug}`);
 					} catch (error) {
-						console.error(`Error backing up character ${character.slug}:`, error);
+						console.error(`Error backing up character ${character.slug}:`, {
+							message: error.message,
+							stack: error.stack
+						});
 						continue;
 					}
 				}
 			}
+			console.log('Completed all character backups successfully');
 		} catch (error) {
-			console.error('Character backup error:', error);
+			console.error('Character backup error:', {
+				message: error.message,
+				stack: error.stack,
+				time: new Date().toISOString()
+			});
+			throw error; // Re-throw to be caught by the scheduled handler
 		}
 	},
 
@@ -2861,25 +2910,22 @@ export default {
 	
 			// Get automatic backups
 			const autoBackups = await env.CHARACTER_BACKUPS.list({
-				prefix: `${userId}/${characterName}/`,
-				delimiter: '/'
+				prefix: `${userId}/${characterName}/automatic/`
 			});
-	
+
 			// Get checkpoint backups
 			const checkpointBackups = await env.CHARACTER_BACKUPS.list({
 				prefix: `${userId}/${characterName}/checkpoints/`
 			});
-	
+
 			// Format backup data
 			const backups = {
-				automatic: autoBackups.objects
-					.filter(obj => !obj.key.includes('/checkpoints/'))
-					.map(obj => ({
-						key: obj.key,
-						date: obj.key.split('/')[2].split('-')[0],
-						type: 'automatic',
-						uploaded: obj.uploaded
-					})),
+				automatic: autoBackups.objects.map(obj => ({
+					key: obj.key,
+					date: obj.key.split('/automatic/')[1].split('-')[0],
+					type: 'automatic',
+					uploaded: obj.uploaded
+				})),
 				checkpoints: checkpointBackups.objects.map(obj => ({
 					key: obj.key,
 					date: obj.key.split('/checkpoints/')[1].split('-')[0],
