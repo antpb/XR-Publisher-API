@@ -205,6 +205,42 @@ fi
 
 echo "Successfully created VISIT_COUNTS namespace with ID: $VISIT_COUNTS_id"
 
+# Create TOKEN_PRICE_KV namespace
+echo "Creating TOKEN_PRICE_KV namespace..."
+TOKEN_PRICE_output=$(npx wrangler kv:namespace create "TOKEN_PRICE_KV" 2>&1)
+if [[ $TOKEN_PRICE_output == *"Error"* ]]; then
+    echo "Error creating TOKEN_PRICE_KV namespace: $TOKEN_PRICE_output"
+    exit 1
+fi
+
+TOKEN_PRICE_id=$(echo "$TOKEN_PRICE_output" | grep 'id = "' | sed 's/.*id = "\([^"]*\)".*/\1/')
+
+if [ -z "$TOKEN_PRICE_id" ]; then
+    echo "Error: Failed to extract TOKEN_PRICE_KV ID"
+    echo "Debug output: $TOKEN_PRICE_output"
+    exit 1
+fi
+
+echo "Successfully created TOKEN_PRICE_KV namespace with ID: $TOKEN_PRICE_id"
+
+# Create CHARACTER_PLANS namespace
+echo "Creating CHARACTER_PLANS namespace..."
+CHARACTER_PLANS_output=$(npx wrangler kv:namespace create "CHARACTER_PLANS" 2>&1)
+if [[ $CHARACTER_PLANS_output == *"Error"* ]]; then
+    echo "Error creating CHARACTER_PLANS namespace: $CHARACTER_PLANS_output"
+    exit 1
+fi
+
+CHARACTER_PLANS_id=$(echo "$CHARACTER_PLANS_output" | grep 'id = "' | sed 's/.*id = "\([^"]*\)".*/\1/')
+
+if [ -z "$CHARACTER_PLANS_id" ]; then
+    echo "Error: Failed to extract CHARACTER_PLANS ID"
+    echo "Debug output: $CHARACTER_PLANS_output"
+    exit 1
+fi
+
+echo "Successfully created CHARACTER_PLANS namespace with ID: $CHARACTER_PLANS_id"
+
 # Collect additional configuration
 read -p "Enter your OpenAI API Key (press Enter to skip): " openai_api_key
 read -p "Enter your Anthropic API Key (press Enter to skip): " anthropic_api_key
@@ -228,7 +264,9 @@ type = "ESModule"
 globs = ["**/*.js"]
 
 kv_namespaces = [
-    { binding = "VISIT_COUNTS", id = "$VISIT_COUNTS_id" }
+    { binding = "VISIT_COUNTS", id = "$VISIT_COUNTS_id" },
+    { binding = "TOKEN_PRICE_KV", id = "$TOKEN_PRICE_id" },
+    { binding = "CHARACTER_PLANS", id = "$CHARACTER_PLANS_id" }
 ]
 
 [ai]
@@ -298,6 +336,12 @@ preview_bucket_name = "${project_name}-items-preview"
 
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+kv_namespaces = [
+    { binding = "VISIT_COUNTS", id = "$VISIT_COUNTS_id" },
+    { binding = "TOKEN_PRICE_KV", id = "$TOKEN_PRICE_id" },
+    { binding = "CHARACTER_PLANS", id = "$CHARACTER_PLANS_id" }
+]
 EOL
 
 echo "Created final wrangler.toml with all configurations"

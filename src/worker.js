@@ -3091,6 +3091,13 @@ export default {
 			});
 		}
 
+		// // Initialize Twitter endpoints handler
+		// const twitterEndpoints = new TwitterEndpoints(null, env);
+		// const twitterResponse = await twitterEndpoints.handleRequest(request, path);
+		// if (twitterResponse) {
+		// 	return twitterResponse;
+		// }
+
 		// Get DO instance (one global instance for the registry)
 		const id = env.WORLD_REGISTRY.idFromName("global");
 		const registry = env.WORLD_REGISTRY.get(id);
@@ -3144,11 +3151,6 @@ export default {
 			return await auth.fetch(internalRequest);
 		}
 
-		// // Handle preflight requests
-		if (request.method === 'OPTIONS') {
-			return this.handleOptions(request);
-		}
-
 		// Authenticate non-GET requests (except certain public endpoints)
 		if (request.method !== 'GET' && ![
 			'/search',
@@ -3173,6 +3175,9 @@ export default {
 			'/migrate-schema',
 			'/api/character/backup-list',
 			'/api/character/download-backup',
+			'/api/character/generate-prompt',
+			'/api/character/generate-plan',
+			'/api/character/get-plan',
 			'/init',
 			'/check'
 		].includes(path)) {
@@ -5146,6 +5151,136 @@ export default {
 					}
 					case '/api/character/delete-backup': {
 						return await this.handleDeleteBackup(request, env);
+					}
+					case '/api/character/generate-prompt': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName } = await request.json();
+							
+							// Auth check
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							return await registry.fetch(new Request('http://internal/generate-prompt', {
+								method: 'POST',
+								body: JSON.stringify({ userId, characterName })
+							}));
+						} catch (error) {
+							console.error('Generate prompt error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+					case '/api/character/generate-plan': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName } = await request.json();
+							
+							// Auth check
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+					
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+					
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+					
+							return await registry.fetch(new Request('http://internal/generate-plan', {
+								method: 'POST',
+								body: JSON.stringify({ userId, characterName })
+							}));
+						} catch (error) {
+							console.error('Generate plan error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+					
+					case '/api/character/get-plan': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName } = await request.json();
+							
+							// Auth check
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+					
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+					
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+					
+							return await registry.fetch(new Request('http://internal/get-plan', {
+								method: 'POST',
+								body: JSON.stringify({ userId, characterName })
+							}));
+						} catch (error) {
+							console.error('Get plan error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
 					}
 					default: {
 						return new Response(JSON.stringify({ error: 'Invalid endpoint' }), {

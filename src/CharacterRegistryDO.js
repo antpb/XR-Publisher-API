@@ -2,6 +2,7 @@ import { EnhancedSQLiteMemoryAdapter } from './EnhancedSQLiteMemoryAdapter.js';
 import { initializeWorkerCompat } from './WorkerCompatibilityLayer.js';
 import { NonceManager } from './NonceManager.js';
 import { DatabaseMigrationManager } from './DatabaseMigrationManager.js';
+import { PlanGenerator } from './PlanGenerator.js';
 
 const CORS_HEADERS = {
 	'Access-Control-Allow-Origin': '*',
@@ -29,6 +30,7 @@ export class CharacterRegistryDO {
 		this.sql = state.storage.sql;
 		this.nonceManager = new NonceManager(this.sql);
 		this.migrationManager = new DatabaseMigrationManager(this.sql);
+		this.planGenerator = new PlanGenerator(env, this);
 
 		// Add explicit timeouts for DO operations
 		this.requestTimeout = 45000;
@@ -2084,6 +2086,9 @@ export class CharacterRegistryDO {
 	// Add scheduled cleanup
 	async scheduled(controller, env, ctx) {
 		await this.nonceManager.cleanupExpiredNonces();
+		
+		// Check and execute pending plans
+		await this.planGenerator.checkAndExecutePlans();
 	}
 
 	async updateCharacterMetadata(author, character) {
@@ -3723,6 +3728,35 @@ export class CharacterRegistryDO {
 				case '/handle-asset-thumbnail-upload': {
 					return await this.handleAssetThumbnailUpload(request);
 				}
+				case '/generate-prompt': {
+					return await this.handleGeneratePrompt(request);
+				}
+				case '/generate-plan': {
+					return await this.handleGeneratePlan(request);
+				}
+				case '/get-plan': {
+					const { userId, characterName } = await request.json();
+					const character = await this.getCharacter(userId, characterName);
+					if (!character) {
+						return new Response(JSON.stringify({ error: 'Character not found' }), {
+							status: 404,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+					
+					const planKey = await this.planGenerator.getPlanKey(character.id);
+					const plan = await this.env.CHARACTER_PLANS.get(planKey);
+					
+					return new Response(plan || JSON.stringify({ error: 'No plan found for today' }), {
+						status: plan ? 200 : 404,
+						headers: { 
+							'Content-Type': 'application/json',
+							'Access-Control-Allow-Origin': '*',
+							'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+							'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+						}
+					});
+				}
 				default:
 					return new Response('Not found', { status: 404 });
 			}
@@ -4197,5 +4231,112 @@ export class CharacterRegistryDO {
 				headers: { 'Content-Type': 'application/json' }
 			});
 		}
+	}
+
+	async handleGeneratePrompt(request) {
+		try {
+			const { userId, characterName } = await request.json();
+			
+			// Get the character
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
+
+			// Get character secrets for AI integration
+			const secrets = await this.getCharacterSecrets(character.id);
+			if (!secrets) {
+				throw new Error('Character secrets not found');
+			}
+
+			// Initialize runtime with character data
+			const runtime = await this.initializeRuntime(character, secrets);
+			const sessionId = crypto.randomUUID();
+			const roomId = await this.initializeCharacterRoom(userId, characterName, sessionId);
+
+			// Create system message with character context
+			const systemMessage = `You are ${character.name}. ${character.bio}
+
+Key Character Traits:
+${character.adjectives.map(adj => `- ${adj}`).join('\n')}
+
+Style Guidelines:
+${character.style?.all.map(style => `- ${style}`).join('\n')}
+${character.style?.post.map(style => `- ${style}`).join('\n')}
+
+Task: Generate a topic for a tweet that would be interesting and relevant to your character's personality and interests. 
+The topic should be something you'd naturally want to discuss.
+Respond with just the topic in a single sentence, no additional commentary.`;
+
+			// Make API call with proper timeout
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), 25000);
+
+			try {
+				const response = await fetch(
+					`https://gateway.ai.cloudflare.com/v1/${this.env.CF_ACCOUNT_ID}/${this.env.CF_GATEWAY_ID}/openai/chat/completions`,
+					{
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'Authorization': `Bearer ${this.env.OPENAI_API_KEY}`
+						},
+						body: JSON.stringify({
+							model: 'gpt-4o-mini',
+							messages: [
+								{ role: "system", content: systemMessage },
+								{ role: "user", content: "Generate a tweet topic that would be interesting to me." }
+							],
+							max_tokens: 150,
+							temperature: 0.7,
+							presence_penalty: 0.6
+						}),
+						signal: controller.signal
+					}
+				);
+
+				clearTimeout(timeout);
+
+				if (!response.ok) {
+					throw new Error(`API call failed: ${response.status}`);
+				}
+
+				const result = await response.json();
+				const topic = result.choices[0].message.content;
+
+				return new Response(JSON.stringify({
+					prompt: `${userId} has requested you generate a tweet on the following topic: ${topic}`,
+					topic: topic
+				}), {
+					headers: { 
+						'Content-Type': 'application/json',
+						'Access-Control-Allow-Origin': '*',
+						'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+						'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+					}
+				});
+
+			} catch (error) {
+				if (error.name === 'AbortError') {
+					throw new Error('API request timed out after 25 seconds');
+				}
+				throw error;
+			} finally {
+				clearTimeout(timeout);
+			}
+		} catch (error) {
+			console.error('Generate prompt error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to generate prompt',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+
+	async handleGeneratePlan(request) {
+		return await this.planGenerator.generatePlan(request);
 	}
 }

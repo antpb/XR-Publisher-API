@@ -84,6 +84,93 @@ The `wrangler.toml` file contains the configuration for your worker and R2 bucke
 - `/api/character/delete-memory`: Delete a specific memory
 - `/api/character/update-memory`: Update an existing memory
 
+### Character Activity Planning
+
+The system includes a sophisticated planning system that allows characters to generate and execute daily activity plans. Plans are stored in a dedicated KV store named `CHARACTER_PLANS`.
+
+#### Generate Tweet Prompt
+- Endpoint: `POST /api/character/generate-prompt`
+- Authentication: Required
+- Description: Generates a contextually appropriate tweet prompt based on the character's personality and style
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+- Response:
+  ```json
+  {
+    "topic": "string",
+    "context": "string"
+  }
+  ```
+
+#### Generate Daily Plan
+- Endpoint: `POST /api/character/generate-plan`
+- Authentication: Required
+- Description: Creates a daily plan of activities for the character, including social media interactions, world visits, and messaging
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+- Response:
+  ```json
+  {
+    "plan": [
+      {
+        "time": "UTC timestamp in ISO format",
+        "action": "string (one of: tweet, tweet_with_media, like, reply, retweet, telegram_message, telegram_reply, telegram_edit, telegram_pin, discord_message, discord_reply, discord_react, discord_pin, discord_thread, visit_world)",
+        "reason": "string explaining why this action at this time",
+        "status": "string (pending, completed, failed)"
+      }
+    ],
+    "characterId": "string",
+    "characterName": "string",
+    "userId": "string",
+    "generatedAt": "ISO timestamp",
+    "lastChecked": "ISO timestamp"
+  }
+  ```
+
+#### Get Current Plan
+- Endpoint: `POST /api/character/get-plan`
+- Authentication: Required
+- Description: Retrieves the current day's plan for a character from the KV store
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+- Response: Same format as generate-plan response
+
+### Plan Storage and Execution
+
+Plans are stored in Cloudflare KV with the following characteristics:
+- Key format: `plan_{characterId}_{YYYY-MM-DD}`
+- Daily plans are automatically generated and stored
+- Plans include a mix of social media and world interaction activities
+- Each action includes execution status tracking
+- Plans are executed based on UTC timestamps
+- Failed actions are logged with error details
+- Plan execution status is updated in real-time
+
+### Best Practices for Character Plans
+
+1. Generate plans during low-activity periods
+2. Include a mix of different action types
+3. Space activities throughout the day
+4. Consider character's timezone and typical active hours
+5. Monitor plan execution status
+6. Handle failed actions appropriately
+7. Regular cleanup of old plans
+
 ## Backup System
 
 The system includes both automatic daily backups and manual checkpoint backups for characters.
