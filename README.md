@@ -17,9 +17,37 @@ Before you begin, ensure you have the following:
 The `wrangler.toml` file contains the configuration for your worker and R2 bucket. Key configurations include:
 
 ### KV Namespaces
-- `VISIT_COUNTS`: Tracks world visits
-- `DOWNLOAD_RATELIMIT`: Manages rate limiting
-- `DOWNLOAD_QUEUE`: Handles download queues
+- `CHARACTER_PLANS`: Stores daily activity plans for characters, with keys in format `plan_{characterId}_{YYYY-MM-DD}`
+- `VISIT_COUNTS`: Tracks world visits and analytics
+- `DOWNLOAD_RATELIMIT`: Manages rate limiting for world downloads
+- `DOWNLOAD_QUEUE`: Handles download queues for large world files
+
+Each KV namespace serves a specific purpose:
+
+### CHARACTER_PLANS
+- Stores daily generated plans for each character
+- Keys are time-based and character-specific
+- Used by the planning system to track and execute character activities
+- Automatically cleaned up after plans expire
+- Example key: `plan_123_2024-02-03`
+
+### VISIT_COUNTS
+- Tracks analytics for world visits
+- Helps measure world popularity
+- Used for featured worlds ranking
+- Aggregates visit data over time
+
+### DOWNLOAD_RATELIMIT
+- Prevents abuse of download endpoints
+- Tracks IP-based rate limits
+- Ensures fair usage of bandwidth
+- Configurable limits per time window
+
+### DOWNLOAD_QUEUE
+- Manages asynchronous download requests
+- Handles large world downloads
+- Prevents server overload
+- Provides status tracking for downloads
 
 ### Durable Objects
 - `WORLD_REGISTRY`: Class name (`WorldRegistryDO`)
