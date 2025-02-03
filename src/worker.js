@@ -56,6 +56,7 @@ export default {
 			const result = await response.json();
 			const responseData = {
 				username: result.username,
+				id: result.id,
 				success: result.valid
 			}
 			return responseData;
@@ -103,25 +104,26 @@ export default {
 		});
 	},
 
-	// Authenticate the request using the stored secret
 	async authenticateRequest(request, env) {
 		const authHeader = request.headers.get('Authorization');
 		if (!authHeader) {
-			return false;
+			return { success: false, username: null };
 		}
 		const [authType, authToken] = authHeader.split(' ');
 		if (authType !== 'Bearer') {
-			return false;
+			return { success: false, username: null };
 		}
 
 		// Check if it's the admin API_SECRET
 		if (authToken === env.API_SECRET) {
-			return true;
+			return { success: true, username: 'admin' };
 		}
 
+		// Extract username from API key format username.keyId
+		const [username] = authToken.split('.');
 		// If not admin key, verify against user API keys
-		const authResult = await this.verifyApiKey(authToken, env);
-		return authResult.success;
+		const { success, username: verifiedUsername, id } = await this.verifyApiKey(authToken, env);
+		return { success, username: verifiedUsername, id };
 	},
 
 	// Handle Create User
@@ -3178,6 +3180,9 @@ export default {
 			'/api/character/generate-prompt',
 			'/api/character/generate-plan',
 			'/api/character/get-plan',
+			'/api/user/settings/migrate',
+			'/api/user/settings',
+			'/api/user/settings/update',
 			'/init',
 			'/check'
 		].includes(path)) {
@@ -3290,6 +3295,38 @@ export default {
 					}
 					case '/author-characters': {
 						return this.handleGetAuthorCharacters(request, env);
+					}
+					case '/api/user/settings': {
+						const { username, id, success } = await this.authenticateRequest(request, env);
+						if (!success) {
+							return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+							});
+						}
+
+						const authId = env.USER_AUTH.idFromName("global");
+						const auth = env.USER_AUTH.get(authId);
+
+						console.log("username is", username);
+						
+						const response = await auth.fetch(new Request('http://internal/get-user-settings', {
+							method: 'POST',
+							headers: {
+								'Content-Type': 'application/json'
+							},
+							body: JSON.stringify({ username, id })
+						}));
+
+						const settings = await response.json();
+						return new Response(JSON.stringify(settings), {
+							headers: { 
+								'Content-Type': 'application/json',
+								'Access-Control-Allow-Origin': '*',
+								'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+								'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+							}
+						});
 					}
 					case '/websocket/': {
 						const channelId = path.split('/')[2];
@@ -5281,6 +5318,199 @@ export default {
 								headers: { ...CORS_HEADERS }
 							});
 						}
+					}
+					case '/api/character/verify-action': {
+                        const url = new URL(request.url);
+                        const token = url.searchParams.get('token');
+                        const isDenied = url.searchParams.get('deny') === 'true';
+
+                        if (!token) {
+                            return new Response(JSON.stringify({ error: 'Missing verification token' }), {
+                                status: 400,
+                                headers: { ...CORS_HEADERS }
+                            });
+                        }
+
+                        const id = env.CHARACTER_REGISTRY.idFromName("global");
+                        const registry = env.CHARACTER_REGISTRY.get(id);
+
+                        try {
+                            const response = await registry.fetch(new Request('http://internal/verify-action', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ token, isDenied })
+                            }));
+
+                            const result = await response.json();
+
+                            // Redirect to a success page
+                            return new Response(null, {
+                                status: 302,
+                                headers: {
+                                    'Location': `/verification-result?status=${result.status}&message=${encodeURIComponent(result.message)}`,
+                                    ...CORS_HEADERS
+                                }
+                            });
+                        } catch (error) {
+                            console.error('Verification error:', error);
+                            return new Response(JSON.stringify({
+                                error: 'Verification failed',
+                                details: error.message
+                            }), {
+                                status: 500,
+                                headers: { ...CORS_HEADERS }
+                            });
+                        }
+                    }
+					case '/api/user/settings/migrate': {
+						const id = env.USER_AUTH.idFromName("global");
+						const auth = env.USER_AUTH.get(id);
+
+						// Verify API key at the worker level
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader || authHeader !== `Bearer ${env.API_SECRET}`) {
+							return new Response(JSON.stringify({
+								error: 'Unauthorized'
+							}), { 
+								status: 401,
+								headers: {
+									'Content-Type': 'application/json',
+									...CORS_HEADERS
+								}
+							});
+						}
+
+						try {
+							const internalRequest = new Request('http://internal/migrate-user-settings', {
+								method: 'POST',
+								headers: {
+									'Content-Type': 'application/json',
+									'X-Admin-Secret': env.API_SECRET
+								},
+								body: JSON.stringify({ action: 'migrate' })
+							});
+
+							const response = await auth.fetch(internalRequest);
+							
+							if (!response.ok) {
+								const errorData = await response.json();
+								return new Response(JSON.stringify(errorData), {
+									status: response.status,
+									headers: {
+										'Content-Type': 'application/json',
+										...CORS_HEADERS
+									}
+								});
+							}
+
+							const result = await response.json();
+							return new Response(JSON.stringify(result), {
+								headers: {
+									'Content-Type': 'application/json',
+									...CORS_HEADERS
+								}
+							});
+						} catch (error) {
+							console.error('Migration error:', error);
+							return new Response(JSON.stringify({
+								error: 'Migration failed',
+								details: error.message
+							}), {
+								status: 500,
+								headers: {
+									'Content-Type': 'application/json',
+									...CORS_HEADERS
+								}
+							});
+						}
+					}
+					case '/api/user/settings/update': {
+						if (request.method === 'POST') {
+							const { username } = await this.authenticateRequest(request, env);
+							const { settings } = await request.json();
+							
+							if (settings.companion_slug) {
+								const charId = env.CHARACTER_REGISTRY.idFromName("global");
+								const charRegistry = env.CHARACTER_REGISTRY.get(charId);
+												try {
+									const companion = await charRegistry.fetch(new Request('http://internal/get-character', {
+										method: 'POST',
+										// headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify({ author: username, slug: settings.companion_slug })
+									}));
+									
+									if (!companion.ok) {
+										return new Response(JSON.stringify({
+											error: 'Invalid companion_slug. Character not found.'
+										}), {
+											status: 400,
+											headers: { 'Content-Type': 'application/json', ...CORS_HEADERS }
+										});
+									}
+								} catch (error) {
+									return new Response(JSON.stringify({
+										error: 'Failed to validate companion',
+										details: error.message
+									}), {
+										status: 500,
+										headers: { 'Content-Type': 'application/json', ...CORS_HEADERS }
+									});
+								}
+							}
+
+							if (settings.vrm_url && !settings.vrm_url.match(/^https?:\/\/.+\.vrm$/i)) {
+								return new Response(JSON.stringify({
+									error: 'Invalid VRM URL. Must be a URL ending in .vrm'
+								}), {
+									status: 400,
+									headers: { 'Content-Type': 'application/json', ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.USER_AUTH.idFromName("global");
+							const auth = env.USER_AUTH.get(id);
+
+							const internalRequest = new Request('http://internal/update-user-settings', {
+								method: 'POST',
+								headers: {
+									'Content-Type': 'application/json'
+								},
+								body: JSON.stringify({ username, settings })
+							});
+
+							try {
+								const response = await auth.fetch(internalRequest);
+								const result = await response.json();
+
+								return new Response(JSON.stringify(result), {
+									status: response.status,
+									headers: {
+										'Content-Type': 'application/json',
+										...CORS_HEADERS
+									}
+								});
+							} catch (error) {
+								return new Response(JSON.stringify({
+									error: 'Settings update failed',
+									details: error.message
+								}), {
+									status: 500,
+									headers: {
+										'Content-Type': 'application/json',
+										...CORS_HEADERS
+									}
+								});
+							}
+						} else if (request.method === 'OPTIONS') {
+							return new Response(null, {
+								headers: {
+									...CORS_HEADERS,
+									'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+									'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+								}
+							});
+						}
+						break;
 					}
 					default: {
 						return new Response(JSON.stringify({ error: 'Invalid endpoint' }), {

@@ -87,7 +87,7 @@ export class PlanGenerator {
         return `plan_${characterId}_${dateStr}`;
     }
 
-    async sendTweetVerificationMessage(userId, characterName, tweetContent) {
+    async sendTweetVerificationMessage(userId, characterName, tweetContent, planId, actionIndex) {
         try {
             const character = await this.characterRegistry.getCharacter(userId, characterName);
             if (!character) {
@@ -99,10 +99,38 @@ export class PlanGenerator {
                 throw new Error('Telegram credentials not found');
             }
 
+            // Generate a unique verification token
+            const verificationToken = crypto.randomUUID();
+            
+            // Store verification data in KV
+            const verificationKey = `verification_${verificationToken}`;
+            await this.env.CHARACTER_PLANS.put(verificationKey, JSON.stringify({
+                planId,
+                actionIndex,
+                characterId: character.id,
+                userId,
+                content: tweetContent,
+                status: 'awaiting_approval',
+                createdAt: new Date().toISOString()
+            }), { expirationTtl: 86400 }); // Expire after 24 hours
+
+            const verificationUrl = `https://your-worker.dev/api/character/verify-action?token=${verificationToken}`;
+            
             const message = `🤖 Tweet Verification Needed\n\n` +
                         `Character: ${character.name}\n` +
                         `Proposed Tweet:\n${tweetContent}\n\n` +
-                        `Please verify this tweet is appropriate for the character.`;
+                        `Please verify this tweet is appropriate for the character.\n\n` +
+                        `✅ Approve: ${verificationUrl}\n` +
+                        `❌ Deny: ${verificationUrl}&deny=true`;
+
+            // Update the plan's action status to awaiting_approval
+            const planKey = await this.getPlanKey(character.id);
+            const currentPlan = await this.env.CHARACTER_PLANS.get(planKey, { type: "json" });
+            if (currentPlan && currentPlan.plan[actionIndex]) {
+                currentPlan.plan[actionIndex].status = 'awaiting_approval';
+                currentPlan.plan[actionIndex].verificationToken = verificationToken;
+                await this.env.CHARACTER_PLANS.put(planKey, JSON.stringify(currentPlan));
+            }
 
             return await this.characterRegistry.handleTelegramMessage(new Request('http://internal/telegram-message', {
                 method: 'POST',
@@ -115,6 +143,70 @@ export class PlanGenerator {
             }));
         } catch (error) {
             console.error('Failed to send tweet verification message:', error);
+            throw error;
+        }
+    }
+
+    async handleVerifyAction(token, isDenied = false) {
+        try {
+            // Get verification data from KV
+            const verificationKey = `verification_${token}`;
+            const verificationData = await this.env.CHARACTER_PLANS.get(verificationKey, { type: "json" });
+            
+            if (!verificationData) {
+                throw new Error('Verification token not found or expired');
+            }
+
+            // Get the plan
+            const planKey = await this.getPlanKey(verificationData.characterId);
+            const currentPlan = await this.env.CHARACTER_PLANS.get(planKey, { type: "json" });
+            
+            if (!currentPlan) {
+                throw new Error('Plan not found');
+            }
+
+            const action = currentPlan.plan[verificationData.actionIndex];
+            if (!action || action.verificationToken !== token) {
+                throw new Error('Action not found or token mismatch');
+            }
+
+            // Update action status based on verification result
+            action.status = isDenied ? 'denied' : 'approved';
+            action.verifiedAt = new Date().toISOString();
+            delete action.verificationToken; // Clean up the token
+
+            // If approved, execute the action
+            if (!isDenied) {
+                switch (action.action) {
+                    case 'tweet': {
+                        await this.characterRegistry.handleTwitterPost(new Request('http://internal/handle-twitter-post', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                userId: verificationData.userId,
+                                characterId: verificationData.characterId,
+                                content: verificationData.content
+                            })
+                        }));
+                        break;
+                    }
+                    // Add other action types that need verification here
+                }
+            }
+
+            // Update the plan in KV
+            await this.env.CHARACTER_PLANS.put(planKey, JSON.stringify(currentPlan));
+            
+            // Clean up verification data
+            await this.env.CHARACTER_PLANS.delete(verificationKey);
+
+            return {
+                success: true,
+                status: action.status,
+                message: isDenied ? 'Action was denied' : 'Action was approved and executed'
+            };
+        } catch (error) {
+            console.error('Action verification failed:', error);
             throw error;
         }
     }
@@ -261,13 +353,41 @@ export class PlanGenerator {
                     
                     if (action.status === 'pending' && actionTime <= now) {
                         try {
+                            // For actions requiring verification, we'll send them to Telegram
+                            if (['tweet', 'tweet_with_media'].includes(action.action)) {
+                                await this.sendTweetVerificationMessage(
+                                    parsedPlan.userId, 
+                                    parsedPlan.characterName, 
+                                    action.content,
+                                    plan.name,
+                                    parsedPlan.plan.indexOf(action)
+                                );
+                                continue; // Skip to next action after sending for verification
+                            }
+
+                            // For non-verification actions, execute immediately
                             await this.executeAction(parsedPlan.userId, parsedPlan.characterName, action);
-                            action.status = 'pending_verification';
+                            action.status = 'completed';
                             action.executedAt = now.toISOString();
                         } catch (error) {
                             console.error('Action execution failed:', error);
                             action.status = 'failed';
                             action.error = error.message;
+                        }
+                    }
+                    // Check for expired verification requests (24h old)
+                    else if (action.status === 'awaiting_approval') {
+                        const verificationAge = now - new Date(action.verificationSentAt || now);
+                        if (verificationAge > 24 * 60 * 60 * 1000) { // 24 hours
+                            action.status = 'expired';
+                            action.error = 'Verification timeout';
+                            
+                            // Clean up the verification token if it exists
+                            if (action.verificationToken) {
+                                const verificationKey = `verification_${action.verificationToken}`;
+                                await this.env.CHARACTER_PLANS.delete(verificationKey);
+                                delete action.verificationToken;
+                            }
                         }
                     }
                 }
