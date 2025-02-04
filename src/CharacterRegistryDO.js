@@ -2089,6 +2089,34 @@ export class CharacterRegistryDO {
 		
 		// Check and execute pending plans
 		await this.planGenerator.checkAndExecutePlans();
+
+		// Generate new plans for all characters except unawoken ones
+		if (controller.cron === "0 0 * * *") { // At midnight UTC
+			try {
+				// Get all characters except unawoken ones
+				const characters = await this.sql.exec(`
+					SELECT author as userId, name as characterName 
+					FROM characters 
+					WHERE status != 'unawoken' OR status IS NULL
+				`).toArray();
+
+				// Generate new plans for each character
+				for (const character of characters) {
+					try {
+						await this.planGenerator.generatePlan(new Request('http://internal/generate-plan', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify(character)
+						}));
+					} catch (error) {
+						console.error(`Failed to generate plan for character ${character.characterName}:`, error);
+						continue;
+					}
+				}
+			} catch (error) {
+				console.error('Failed to generate daily plans:', error);
+			}
+		}
 	}
 
 	async updateCharacterMetadata(author, character) {
