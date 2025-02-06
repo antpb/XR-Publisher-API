@@ -170,7 +170,6 @@ export default {
 
 	async scheduled(controller, env, ctx) {
 		try {
-			// Log all cron triggers for debugging
 			console.log('Cron triggered:', {
 				pattern: controller.cron,
 				scheduledTime: new Date().toISOString(),
@@ -178,7 +177,20 @@ export default {
 				hasBackupBucket: !!env.CHARACTER_BACKUPS
 			});
 
-			// Handle daily character backups at 22:07 UTC
+			// Forward the cron event to CharacterRegistryDO
+			const id = env.CHARACTER_REGISTRY.idFromName("global");
+			const registry = env.CHARACTER_REGISTRY.get(id);
+			const response = await registry.fetch(new Request('http://internal/scheduled', {
+				method: 'POST',
+				body: JSON.stringify({ cron: controller.cron })
+			}));
+			
+			if (!response.ok) {
+				throw new Error(`CharacterRegistryDO scheduled task failed: ${await response.text()}`);
+			}
+			console.log('CharacterRegistryDO scheduled task completed');
+
+			// Handle backups if needed
 			if (controller.cron === "25 23 * * *") {
 				console.log('Starting daily character backup at 23:25 UTC');
 				if (!env.CHARACTER_REGISTRY || !env.CHARACTER_BACKUPS) {
@@ -189,15 +201,11 @@ export default {
 					return;
 				}
 
-				// Get registry instance
-				const id = env.CHARACTER_REGISTRY.idFromName("global");
-				const registry = env.CHARACTER_REGISTRY.get(id);
-				console.log('Got CHARACTER_REGISTRY instance');
-
 				await this.handleDailyCharacterBackups(env);
 				console.log('Completed daily character backup');
 			} else {
-				console.log('Skipping backup - cron pattern does not match expected "7 22 * * *"');
+				// Updated log message to be more generic
+				console.log(`Skipping backup - cron pattern "${controller.cron}" is not for backup task`);
 			}
 		} catch (error) {
 			console.error('Scheduled task error:', {

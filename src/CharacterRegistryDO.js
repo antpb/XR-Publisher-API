@@ -2085,13 +2085,19 @@ export class CharacterRegistryDO {
 
 	// Add scheduled cleanup
 	async scheduled(controller, env, ctx) {
+		console.log('CharacterRegistryDO scheduled event received:', {
+			cron: controller.cron,
+			time: new Date().toISOString()
+		});
+
 		await this.nonceManager.cleanupExpiredNonces();
 		
 		// Check and execute pending plans
 		await this.planGenerator.checkAndExecutePlans();
 
 		// Generate new plans for all characters except unawoken ones
-		if (controller.cron === "0 0 * * *") { // At midnight UTC
+		if (controller.cron === "0 8 * * *") { // At 16:35 UTC
+			console.log('Starting plan generation for all characters');
 			try {
 				// Get all characters except unawoken ones
 				const characters = await this.sql.exec(`
@@ -2100,23 +2106,32 @@ export class CharacterRegistryDO {
 					WHERE status != 'unawoken' OR status IS NULL
 				`).toArray();
 
+				console.log(`Found ${characters.length} characters to generate plans for`);
+
 				// Generate new plans for each character
 				for (const character of characters) {
 					try {
+						console.log(`Generating plan for character: ${character.characterName}`);
 						await this.planGenerator.generatePlan(new Request('http://internal/generate-plan', {
 							method: 'POST',
 							headers: { 'Content-Type': 'application/json' },
 							body: JSON.stringify(character)
 						}));
+						console.log(`Successfully generated plan for ${character.characterName}`);
 					} catch (error) {
 						console.error(`Failed to generate plan for character ${character.characterName}:`, error);
 						continue;
 					}
 				}
+				console.log('Completed plan generation for all characters');
 			} catch (error) {
 				console.error('Failed to generate daily plans:', error);
 			}
+		} else {
+			console.log('Cron pattern did not match plan generation time:', controller.cron);
 		}
+
+		return new Response('Scheduled tasks completed', { status: 200 });
 	}
 
 	async updateCharacterMetadata(author, character) {
@@ -3269,13 +3284,21 @@ export class CharacterRegistryDO {
 	}
 
 	async fetch(request) {
+		const url = new URL(request.url);
+		
+		// Add debug logging for internal/scheduled route
+		if (url.pathname === '/scheduled') {
+			console.log('Received internal scheduled request');
+			const { cron } = await request.json();
+			console.log('Cron pattern received:', cron);
+			return await this.scheduled({ cron }, this.env, {});
+		}
+
 		if (request.method === "GET") {
 			return new Response("Method not allowed", { status: 405 });
 		}
 
 		if (request.method === "POST") {
-			const url = new URL(request.url);
-
 			switch (url.pathname) {
 				case '/export-character': {
 					return await this.handleCharacterExport(request);
