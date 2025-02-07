@@ -718,34 +718,43 @@ export class CharacterRegistryDO {
 
 	async handleMigrateSchema() {
 		try {
-			// await this.migrationManager.migrateWalletSchema();
-			await this.migrateAssetSchema();
-			
-			return new Response(JSON.stringify({
-				success: true,
-				message: 'Schema migration completed successfully',
-				details: {
-					baseSchema: true,
-					characterSlugs: true,
-					roomSupport: true,
-					imageFields: true,
-					assetSchema: true
-				}
-			}), {
-				headers: { 'Content-Type': 'application/json' }
-			});
+		//   await this.migrateAssetSchema();
+		// log the before schema
+		const beforeSchema = await this.sql.exec('PRAGMA table_info(characters)').toArray();
+		('Before schema:', beforeSchema);
+
+		  await this.migrateCharacterExtras();
+
+		  // log the after schema
+		  const afterSchema = await this.sql.exec('PRAGMA table_info(characters)').toArray();
+		  ('After schema:', afterSchema);
+
+		  return new Response(JSON.stringify({
+			success: true,
+			message: 'Schema migration completed successfully',
+			details: {
+			  baseSchema: true,
+			  characterSlugs: true,
+			  roomSupport: true,
+			  imageFields: true,
+			  assetSchema: true,
+			  characterExtras: true
+			}
+		  }), {
+			headers: { 'Content-Type': 'application/json' }
+		  });
 		} catch (error) {
-			console.error('Migration error:', error);
-			return new Response(JSON.stringify({
-				success: false,
-				error: 'Migration failed',
-				details: error.message
-			}), {
-				status: 500,
-				headers: { 'Content-Type': 'application/json' }
-			});
+		  console.error('Migration error:', error);
+		  return new Response(JSON.stringify({
+			success: false,
+			error: 'Migration failed',
+			details: error.message
+		  }), {
+			status: 500,
+			headers: { 'Content-Type': 'application/json' }
+		  });
 		}
-	}
+	  }
 
 	// Add these helper methods to handle wallet operations
 	async saveCharacterWallets(characterId, wallets) {
@@ -785,11 +794,10 @@ export class CharacterRegistryDO {
 			clients: characterData.clients || ["DIRECT"],
 			bio: Array.isArray(characterData.bio) ? characterData.bio.join('\n') : characterData.bio,
 			lore: characterData.lore?.filter(Boolean).map(text => text.trim()) || [],
-			topics: characterData.topics?.filter(Boolean).map(text => text.trim()) || [], // Ensure topics is handled
+			topics: characterData.topics?.filter(Boolean).map(text => text.trim()) || [],
 			adjectives: characterData.adjectives?.filter(Boolean).map(text => text.trim()) || [],
 			messageExamples: characterData.messageExamples?.filter(Array.isArray) || [],
 			postExamples: characterData.postExamples?.filter(Boolean) || [],
-			// Properly structure style object
 			style: {
 				all: characterData.style?.all?.filter(Boolean) || [],
 				chat: characterData.style?.chat?.filter(Boolean) || [],
@@ -801,9 +809,24 @@ export class CharacterRegistryDO {
 			},
 			wallets: characterData.wallets || {
 				ETH: '0x0000000000000000000000000000000000000000'
-			}
+			},
+			companion_slug: characterData.companion_slug || null,
+			equipped_inventory: Array.isArray(characterData.equipped_inventory) 
+				? JSON.stringify(characterData.equipped_inventory) 
+				: '[]',
+			approval_channel: characterData.approval_channel || null,
+			mood: characterData.mood || 'normal',
+			stats: typeof characterData.stats === 'object' 
+				? JSON.stringify(characterData.stats) 
+				: '{}',
+			extras: typeof characterData.extras === 'object' 
+				? JSON.stringify(characterData.extras) 
+				: '{}',
+			private_extras: characterData.private_extras 
+				? JSON.stringify(characterData.private_extras) 
+				: undefined
 		};
-
+	
 		return cleanedCharacter;
 	}
 
@@ -997,32 +1020,38 @@ export class CharacterRegistryDO {
 	async getCharactersByAuthor(author) {
 		try {
 			const characters = await this.sql.exec(`
-			SELECT c.*, 
-			  c.vrm_url,
-			  c.model_provider,
-			  c.profile_img,
-			  c.banner_img,
-			  c.bio,
-			  c.status,
-			  c.settings,
-			  c.slug,
-			  c.created_at,
-			  c.updated_at,
-			  GROUP_CONCAT(DISTINCT cc.client) as clients,
-			  GROUP_CONCAT(DISTINCT cl.lore_text) as lore,
-			  GROUP_CONCAT(DISTINCT cp.post_text) as posts,
-			  GROUP_CONCAT(DISTINCT ct.topic) as topics,
-			  GROUP_CONCAT(DISTINCT ca.adjective) as adjectives
-			FROM characters c
-			LEFT JOIN character_clients cc ON c.id = cc.character_id
-			LEFT JOIN character_lore cl ON c.id = cl.character_id
-			LEFT JOIN character_posts cp ON c.id = cp.character_id
-			LEFT JOIN character_topics ct ON c.id = ct.character_id
-			LEFT JOIN character_adjectives ca ON c.id = ca.character_id
-			WHERE c.author = ?
-			GROUP BY c.id
-			ORDER BY c.updated_at DESC
-		  `, author).toArray();
+				SELECT c.*, 
+				  c.vrm_url,
+				  c.model_provider,
+				  c.profile_img,
+				  c.banner_img,
+				  c.bio,
+				  c.status,
+				  c.settings,
+				  c.slug,
+				  c.companion_slug,
+				  c.equipped_inventory,
+				  c.approval_channel,
+				  c.mood,
+				  c.stats,
+				  c.extras,
+				  c.created_at,
+				  c.updated_at,
+				  GROUP_CONCAT(DISTINCT cc.client) as clients,
+				  GROUP_CONCAT(DISTINCT cl.lore_text) as lore,
+				  GROUP_CONCAT(DISTINCT cp.post_text) as posts,
+				  GROUP_CONCAT(DISTINCT ct.topic) as topics,
+				  GROUP_CONCAT(DISTINCT ca.adjective) as adjectives
+				FROM characters c
+				LEFT JOIN character_clients cc ON c.id = cc.character_id
+				LEFT JOIN character_lore cl ON c.id = cl.character_id
+				LEFT JOIN character_posts cp ON c.id = cp.character_id
+				LEFT JOIN character_topics ct ON c.id = ct.character_id
+				LEFT JOIN character_adjectives ca ON c.id = ca.character_id
+				WHERE c.author = ?
+				GROUP BY c.id
+				ORDER BY c.updated_at DESC
+				`, author).toArray();
 
 			return Promise.all(characters.map(async (char) => {
 				const messages = await this.sql.exec(`
@@ -1047,7 +1076,7 @@ export class CharacterRegistryDO {
 
 				return {
 					name: char.name,
-					slug: char.slug,     /* Add slug to return object */
+					slug: char.slug,
 					status: char.status || 'private',
 					modelProvider: char.model_provider,
 					clients: char.clients ? char.clients.split(',') : ['DIRECT'],
@@ -1063,6 +1092,12 @@ export class CharacterRegistryDO {
 					adjectives: char.adjectives ? char.adjectives.split(',').filter(Boolean) : [],
 					settings: JSON.parse(char.settings || '{}'),
 					wallets,
+					companion_slug: char.companion_slug,
+					equipped_inventory: JSON.parse(char.equipped_inventory || '[]'),
+					approval_channel: char.approval_channel,
+					mood: char.mood || 'normal',
+					stats: JSON.parse(char.stats || '{}'),
+					extras: JSON.parse(char.extras || '{}'),
 					created_at: char.created_at,
 					updated_at: char.updated_at
 				};
@@ -1091,32 +1126,39 @@ export class CharacterRegistryDO {
 			const characterId = characterCheck[0].id;
 
 			const character = await this.sql.exec(`
-			SELECT c.*, 
-			  c.vrm_url,           
-			  c.model_provider,
-			  c.profile_img,
-			  c.banner_img,
-			  c.bio,
-			  c.status,
-			  c.settings,
-			  c.slug,
-			  c.created_at,
-			  c.updated_at,
-			  GROUP_CONCAT(DISTINCT cc.client) as clients,
-			  GROUP_CONCAT(DISTINCT cl.lore_text) as lore,
-			  GROUP_CONCAT(DISTINCT cp.post_text) as posts,
-			  GROUP_CONCAT(DISTINCT ct.topic) as topics,
-			  GROUP_CONCAT(DISTINCT ca.adjective) as adjectives
-			FROM characters c
-			LEFT JOIN character_clients cc ON c.id = cc.character_id
-			LEFT JOIN character_lore cl ON c.id = cl.character_id
-			LEFT JOIN character_posts cp ON c.id = cp.character_id
-			LEFT JOIN character_topics ct ON c.id = ct.character_id
-			LEFT JOIN character_adjectives ca ON c.id = ca.character_id
-			WHERE c.author = ? AND c.slug = ?
-			GROUP BY c.id
-			LIMIT 1
-		  `, author, slug).toArray();
+				SELECT c.*, 
+				  c.vrm_url,           
+				  c.model_provider,
+				  c.profile_img,
+				  c.banner_img,
+				  c.bio,
+				  c.status,
+				  c.settings,
+				  c.slug,
+				  c.companion_slug,
+				  c.equipped_inventory,
+				  c.approval_channel,
+				  c.mood,
+				  c.stats,
+				  c.extras,
+				  c.private_extras,
+				  c.created_at,
+				  c.updated_at,
+				  GROUP_CONCAT(DISTINCT cc.client) as clients,
+				  GROUP_CONCAT(DISTINCT cl.lore_text) as lore,
+				  GROUP_CONCAT(DISTINCT cp.post_text) as posts,
+				  GROUP_CONCAT(DISTINCT ct.topic) as topics,
+				  GROUP_CONCAT(DISTINCT ca.adjective) as adjectives
+				FROM characters c
+				LEFT JOIN character_clients cc ON c.id = cc.character_id
+				LEFT JOIN character_lore cl ON c.id = cl.character_id
+				LEFT JOIN character_posts cp ON c.id = cp.character_id
+				LEFT JOIN character_topics ct ON c.id = ct.character_id
+				LEFT JOIN character_adjectives ca ON c.id = ca.character_id
+				WHERE c.author = ? AND c.slug = ?
+				GROUP BY c.id
+				LIMIT 1
+				`, author, slug).toArray();
 
 			if (character.length === 0) {
 				return null;
@@ -1163,6 +1205,12 @@ export class CharacterRegistryDO {
 				adjectives: char.adjectives ? char.adjectives.split(',').filter(Boolean) : [],
 				settings: JSON.parse(char.settings || '{}'),
 				wallets,
+				companion_slug: char.companion_slug,
+				equipped_inventory: JSON.parse(char.equipped_inventory || '[]'),
+				approval_channel: char.approval_channel,
+				mood: char.mood || 'normal',
+				stats: JSON.parse(char.stats || '{}'),
+				extras: JSON.parse(char.extras || '{}'),
 				created_at: char.created_at,
 				updated_at: char.updated_at
 			};
@@ -1180,21 +1228,27 @@ export class CharacterRegistryDO {
 			const featuredCharacters = [];
 			for (const author of featuredAuthors) {
 				const characters = await this.sql.exec(`
-			  SELECT c.*, 
-				c.vrm_url,  
-				c.profile_img,
-				c.banner_img,         
-				c.model_provider,
-				c.bio,
-				c.status,
-				c.slug,
-				c.settings,
-				c.created_at,
-				c.updated_at
-			  FROM characters c
-			  WHERE c.author = ?
-			  ORDER BY c.updated_at ASC
-			`, author).toArray();
+					SELECT c.*, 
+						c.vrm_url,  
+						c.profile_img,
+						c.banner_img,         
+						c.model_provider,
+						c.bio,
+						c.status,
+						c.slug,
+						c.companion_slug,
+						c.equipped_inventory,
+						c.approval_channel,
+						c.mood,
+						c.stats,
+						c.extras,
+						c.settings,
+						c.created_at,
+						c.updated_at
+					FROM characters c
+					WHERE c.author = ?
+					ORDER BY c.updated_at ASC
+					`, author).toArray();
 
 				featuredCharacters.push(...await Promise.all(characters.map(async char => {
 					const wallets = await this.getCharacterWallets(char.id);
@@ -1209,6 +1263,12 @@ export class CharacterRegistryDO {
 						bannerImg: char.banner_img,
 						modelProvider: char.model_provider,
 						wallets,
+						companion_slug: char.companion_slug,
+						equipped_inventory: JSON.parse(char.equipped_inventory || '[]'),
+						approval_channel: char.approval_channel,
+						mood: char.mood || 'normal',
+						stats: JSON.parse(char.stats || '{}'),
+						extras: JSON.parse(char.extras || '{}'),
 						created_at: char.created_at,
 						updated_at: char.updated_at
 					};
@@ -3815,6 +3875,58 @@ export class CharacterRegistryDO {
 
 		return new Response('Method not allowed', { status: 405 });
 	}
+
+	async migrateCharacterExtras() {
+		try {
+		  await this.sql.exec('PRAGMA foreign_keys = OFF;');
+	  
+		  // Get existing columns
+		  const tableInfo = await this.sql.exec('PRAGMA table_info(characters)').toArray();
+		  const columns = tableInfo.map(col => col.name);
+	  
+		  // Add companion_slug if it doesn't exist
+		  if (!columns.includes('companion_slug')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN companion_slug TEXT');
+		  }
+	  
+		  // Add equipped_inventory if it doesn't exist
+		  if (!columns.includes('equipped_inventory')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN equipped_inventory TEXT DEFAULT "[]"');
+		  }
+	  
+		  // Add approval_channel if it doesn't exist
+		  if (!columns.includes('approval_channel')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN approval_channel TEXT');
+		  }
+	  
+		  // Add mood if it doesn't exist
+		  if (!columns.includes('mood')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN mood TEXT DEFAULT "normal"');
+		  }
+	  
+		  // Add stats if it doesn't exist
+		  if (!columns.includes('stats')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN stats TEXT DEFAULT "{}"');
+		  }
+	  
+		  // Add extras if it doesn't exist
+		  if (!columns.includes('extras')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN extras TEXT DEFAULT "{}"');
+		  }
+	  
+		  // Add private_extras if it doesn't exist
+		  if (!columns.includes('private_extras')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN private_extras TEXT DEFAULT "{}"');
+		  }
+	  
+		  await this.sql.exec('PRAGMA foreign_keys = ON;');
+		  return true;
+		} catch (error) {
+		  console.error('Error in character extras migration:', error);
+		  await this.sql.exec('PRAGMA foreign_keys = ON;');
+		  throw error;
+		}
+	  }
 
 	async migrateAssetSchema() {
 		try {
