@@ -1073,7 +1073,7 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async getCharacter(author, slug) {  // Changed parameter name from 'name' to 'slug'
+	async getCharacter(author, slug) {
 		try {
 			('Getting character:', author, slug);
 			if (typeof slug === 'string') {
@@ -2096,7 +2096,7 @@ export class CharacterRegistryDO {
 		await this.planGenerator.checkAndExecutePlans();
 
 		// Generate new plans for all characters except unawoken ones
-		if (controller.cron === "0 8 * * *") { // At 16:35 UTC
+		if (controller.cron === "0 6 * * *") {
 			console.log('Starting plan generation for all characters');
 			try {
 				// Get all characters except unawoken ones
@@ -2160,7 +2160,7 @@ export class CharacterRegistryDO {
 				JSON.stringify(settingsWithoutSecrets),
 				character.status || 'private',
 				author,
-				character.slug  // Changed from character.name
+				character.slug
 			).toArray();
 
 			if (!result.length) {
@@ -2266,7 +2266,7 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async updateCharacterImages(author, slug, updates) {  // Changed from characterName to slug
+	async updateCharacterImages(author, slug, updates) {
 		try {
 			const updateFields = [];
 			const params = [];
@@ -2284,13 +2284,13 @@ export class CharacterRegistryDO {
 				throw new Error('No image updates provided');
 			}
 
-			params.push(author, slug);  // Changed from characterName to slug
+			params.push(author, slug);
 
 			const result = await this.sql.exec(`
 				UPDATE characters 
 				SET ${updateFields.join(', ')},
 					updated_at = CURRENT_TIMESTAMP
-				WHERE author = ? AND slug = ?  // Changed from name to slug
+				WHERE author = ? AND slug = ?
 				RETURNING *
 			  `, ...params).toArray();
 
@@ -2305,7 +2305,7 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async updateCharacterSecrets(author, slug, secrets) {  // Changed from characterName to slug
+	async updateCharacterSecrets(author, slug, secrets) {
 		try {
 			// First get the character ID
 			const characters = await this.sql.exec(`

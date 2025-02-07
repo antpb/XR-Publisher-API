@@ -82,9 +82,8 @@ export class PlanGenerator {
         ];
     }
 
-    async getPlanKey(characterId, date) {
-        const dateStr = date ? date.toISOString().split('T')[0] : new Date().toISOString().split('T')[0];
-        return `plan_${characterId}_${dateStr}`;
+    async getPlanKey(characterId) {
+        return `active_plan_${characterId}`;
     }
 
     async sendTweetVerificationMessage(userId, characterName, tweetContent, planId, actionIndex) {
@@ -338,8 +337,7 @@ export class PlanGenerator {
 
     async checkAndExecutePlans() {
         try {
-            const today = new Date().toISOString().split('T')[0];
-            const plansList = await this.env.CHARACTER_PLANS.list({ prefix: `plan_${today}` });
+            const plansList = await this.env.CHARACTER_PLANS.list({ prefix: 'active_plan_' });
             
             for (const plan of plansList.keys) {
                 const planData = await this.env.CHARACTER_PLANS.get(plan.name);
@@ -347,6 +345,13 @@ export class PlanGenerator {
 
                 const parsedPlan = JSON.parse(planData);
                 const now = new Date();
+                const planDate = parsedPlan.generatedAt.split('T')[0];
+                const today = now.toISOString().split('T')[0];
+
+                // If plan is from a previous day, skip it until new plan is generated
+                if (planDate < today) {
+                    continue;
+                }
 
                 for (const action of parsedPlan.plan) {
                     const actionTime = new Date(action.time);
@@ -427,8 +432,8 @@ Available Actions:
 ${this.availableActions.map(action => `- ${action.type}: ${action.description}`).join('\n')}
 
 Task: Generate a plan for today's activities. Consider your character's personality, interests, and typical behavior patterns.
-Create a schedule of 3-5 activities from the available actions above.
-Each activity should have a specific UTC time to perform it.
+Create a schedule of 3-8 activities from the available actions above.
+Schedule activities at realistic times throughout the day at 15 minute intervals (e.g. 08:30, 12:15, 15:45, 19:20 UTC).
 
 IMPORTANT: Use ONLY these exact action types in your response:
 - "tweet"
