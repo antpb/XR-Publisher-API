@@ -2,6 +2,7 @@ import { EnhancedSQLiteMemoryAdapter } from './EnhancedSQLiteMemoryAdapter.js';
 import { initializeWorkerCompat } from './WorkerCompatibilityLayer.js';
 import { NonceManager } from './NonceManager.js';
 import { DatabaseMigrationManager } from './DatabaseMigrationManager.js';
+import { PlanGenerator } from './PlanGenerator.js';
 
 const CORS_HEADERS = {
 	'Access-Control-Allow-Origin': '*',
@@ -29,6 +30,7 @@ export class CharacterRegistryDO {
 		this.sql = state.storage.sql;
 		this.nonceManager = new NonceManager(this.sql);
 		this.migrationManager = new DatabaseMigrationManager(this.sql);
+		this.planGenerator = new PlanGenerator(env, this);
 
 		// Add explicit timeouts for DO operations
 		this.requestTimeout = 45000;
@@ -716,32 +718,43 @@ export class CharacterRegistryDO {
 
 	async handleMigrateSchema() {
 		try {
-			await this.migrationManager.migrateWalletSchema();
-			
-			return new Response(JSON.stringify({
-				success: true,
-				message: 'Schema migration completed successfully',
-				details: {
-					baseSchema: true,
-					characterSlugs: true,
-					roomSupport: true,
-					imageFields: true
-				}
-			}), {
-				headers: { 'Content-Type': 'application/json' }
-			});
+		//   await this.migrateAssetSchema();
+		// log the before schema
+		const beforeSchema = await this.sql.exec('PRAGMA table_info(characters)').toArray();
+		('Before schema:', beforeSchema);
+
+		  await this.migrateCharacterExtras();
+
+		  // log the after schema
+		  const afterSchema = await this.sql.exec('PRAGMA table_info(characters)').toArray();
+		  ('After schema:', afterSchema);
+
+		  return new Response(JSON.stringify({
+			success: true,
+			message: 'Schema migration completed successfully',
+			details: {
+			  baseSchema: true,
+			  characterSlugs: true,
+			  roomSupport: true,
+			  imageFields: true,
+			  assetSchema: true,
+			  characterExtras: true
+			}
+		  }), {
+			headers: { 'Content-Type': 'application/json' }
+		  });
 		} catch (error) {
-			console.error('Migration error:', error);
-			return new Response(JSON.stringify({
-				success: false,
-				error: 'Migration failed',
-				details: error.message
-			}), {
-				status: 500,
-				headers: { 'Content-Type': 'application/json' }
-			});
+		  console.error('Migration error:', error);
+		  return new Response(JSON.stringify({
+			success: false,
+			error: 'Migration failed',
+			details: error.message
+		  }), {
+			status: 500,
+			headers: { 'Content-Type': 'application/json' }
+		  });
 		}
-	}
+	  }
 
 	// Add these helper methods to handle wallet operations
 	async saveCharacterWallets(characterId, wallets) {
@@ -781,11 +794,10 @@ export class CharacterRegistryDO {
 			clients: characterData.clients || ["DIRECT"],
 			bio: Array.isArray(characterData.bio) ? characterData.bio.join('\n') : characterData.bio,
 			lore: characterData.lore?.filter(Boolean).map(text => text.trim()) || [],
-			topics: characterData.topics?.filter(Boolean).map(text => text.trim()) || [], // Ensure topics is handled
+			topics: characterData.topics?.filter(Boolean).map(text => text.trim()) || [],
 			adjectives: characterData.adjectives?.filter(Boolean).map(text => text.trim()) || [],
 			messageExamples: characterData.messageExamples?.filter(Array.isArray) || [],
 			postExamples: characterData.postExamples?.filter(Boolean) || [],
-			// Properly structure style object
 			style: {
 				all: characterData.style?.all?.filter(Boolean) || [],
 				chat: characterData.style?.chat?.filter(Boolean) || [],
@@ -797,9 +809,24 @@ export class CharacterRegistryDO {
 			},
 			wallets: characterData.wallets || {
 				ETH: '0x0000000000000000000000000000000000000000'
-			}
+			},
+			companion_slug: characterData.companion_slug || null,
+			equipped_inventory: Array.isArray(characterData.equipped_inventory) 
+				? JSON.stringify(characterData.equipped_inventory) 
+				: '[]',
+			approval_channel: characterData.approval_channel || null,
+			mood: characterData.mood || 'normal',
+			stats: typeof characterData.stats === 'object' 
+				? JSON.stringify(characterData.stats) 
+				: '{}',
+			extras: typeof characterData.extras === 'object' 
+				? JSON.stringify(characterData.extras) 
+				: '{}',
+			private_extras: characterData.private_extras 
+				? JSON.stringify(characterData.private_extras) 
+				: undefined
 		};
-
+	
 		return cleanedCharacter;
 	}
 
@@ -993,32 +1020,38 @@ export class CharacterRegistryDO {
 	async getCharactersByAuthor(author) {
 		try {
 			const characters = await this.sql.exec(`
-			SELECT c.*, 
-			  c.vrm_url,
-			  c.model_provider,
-			  c.profile_img,
-			  c.banner_img,
-			  c.bio,
-			  c.status,
-			  c.settings,
-			  c.slug,
-			  c.created_at,
-			  c.updated_at,
-			  GROUP_CONCAT(DISTINCT cc.client) as clients,
-			  GROUP_CONCAT(DISTINCT cl.lore_text) as lore,
-			  GROUP_CONCAT(DISTINCT cp.post_text) as posts,
-			  GROUP_CONCAT(DISTINCT ct.topic) as topics,
-			  GROUP_CONCAT(DISTINCT ca.adjective) as adjectives
-			FROM characters c
-			LEFT JOIN character_clients cc ON c.id = cc.character_id
-			LEFT JOIN character_lore cl ON c.id = cl.character_id
-			LEFT JOIN character_posts cp ON c.id = cp.character_id
-			LEFT JOIN character_topics ct ON c.id = ct.character_id
-			LEFT JOIN character_adjectives ca ON c.id = ca.character_id
-			WHERE c.author = ?
-			GROUP BY c.id
-			ORDER BY c.updated_at DESC
-		  `, author).toArray();
+				SELECT c.*, 
+				  c.vrm_url,
+				  c.model_provider,
+				  c.profile_img,
+				  c.banner_img,
+				  c.bio,
+				  c.status,
+				  c.settings,
+				  c.slug,
+				  c.companion_slug,
+				  c.equipped_inventory,
+				  c.approval_channel,
+				  c.mood,
+				  c.stats,
+				  c.extras,
+				  c.created_at,
+				  c.updated_at,
+				  GROUP_CONCAT(DISTINCT cc.client) as clients,
+				  GROUP_CONCAT(DISTINCT cl.lore_text) as lore,
+				  GROUP_CONCAT(DISTINCT cp.post_text) as posts,
+				  GROUP_CONCAT(DISTINCT ct.topic) as topics,
+				  GROUP_CONCAT(DISTINCT ca.adjective) as adjectives
+				FROM characters c
+				LEFT JOIN character_clients cc ON c.id = cc.character_id
+				LEFT JOIN character_lore cl ON c.id = cl.character_id
+				LEFT JOIN character_posts cp ON c.id = cp.character_id
+				LEFT JOIN character_topics ct ON c.id = ct.character_id
+				LEFT JOIN character_adjectives ca ON c.id = ca.character_id
+				WHERE c.author = ?
+				GROUP BY c.id
+				ORDER BY c.updated_at DESC
+				`, author).toArray();
 
 			return Promise.all(characters.map(async (char) => {
 				const messages = await this.sql.exec(`
@@ -1043,7 +1076,7 @@ export class CharacterRegistryDO {
 
 				return {
 					name: char.name,
-					slug: char.slug,     /* Add slug to return object */
+					slug: char.slug,
 					status: char.status || 'private',
 					modelProvider: char.model_provider,
 					clients: char.clients ? char.clients.split(',') : ['DIRECT'],
@@ -1059,6 +1092,12 @@ export class CharacterRegistryDO {
 					adjectives: char.adjectives ? char.adjectives.split(',').filter(Boolean) : [],
 					settings: JSON.parse(char.settings || '{}'),
 					wallets,
+					companion_slug: char.companion_slug,
+					equipped_inventory: JSON.parse(char.equipped_inventory || '[]'),
+					approval_channel: char.approval_channel,
+					mood: char.mood || 'normal',
+					stats: JSON.parse(char.stats || '{}'),
+					extras: JSON.parse(char.extras || '{}'),
 					created_at: char.created_at,
 					updated_at: char.updated_at
 				};
@@ -1069,7 +1108,7 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async getCharacter(author, slug) {  // Changed parameter name from 'name' to 'slug'
+	async getCharacter(author, slug) {
 		try {
 			('Getting character:', author, slug);
 			if (typeof slug === 'string') {
@@ -1087,32 +1126,39 @@ export class CharacterRegistryDO {
 			const characterId = characterCheck[0].id;
 
 			const character = await this.sql.exec(`
-			SELECT c.*, 
-			  c.vrm_url,           
-			  c.model_provider,
-			  c.profile_img,
-			  c.banner_img,
-			  c.bio,
-			  c.status,
-			  c.settings,
-			  c.slug,
-			  c.created_at,
-			  c.updated_at,
-			  GROUP_CONCAT(DISTINCT cc.client) as clients,
-			  GROUP_CONCAT(DISTINCT cl.lore_text) as lore,
-			  GROUP_CONCAT(DISTINCT cp.post_text) as posts,
-			  GROUP_CONCAT(DISTINCT ct.topic) as topics,
-			  GROUP_CONCAT(DISTINCT ca.adjective) as adjectives
-			FROM characters c
-			LEFT JOIN character_clients cc ON c.id = cc.character_id
-			LEFT JOIN character_lore cl ON c.id = cl.character_id
-			LEFT JOIN character_posts cp ON c.id = cp.character_id
-			LEFT JOIN character_topics ct ON c.id = ct.character_id
-			LEFT JOIN character_adjectives ca ON c.id = ca.character_id
-			WHERE c.author = ? AND c.slug = ?
-			GROUP BY c.id
-			LIMIT 1
-		  `, author, slug).toArray();
+				SELECT c.*, 
+				  c.vrm_url,           
+				  c.model_provider,
+				  c.profile_img,
+				  c.banner_img,
+				  c.bio,
+				  c.status,
+				  c.settings,
+				  c.slug,
+				  c.companion_slug,
+				  c.equipped_inventory,
+				  c.approval_channel,
+				  c.mood,
+				  c.stats,
+				  c.extras,
+				  c.private_extras,
+				  c.created_at,
+				  c.updated_at,
+				  GROUP_CONCAT(DISTINCT cc.client) as clients,
+				  GROUP_CONCAT(DISTINCT cl.lore_text) as lore,
+				  GROUP_CONCAT(DISTINCT cp.post_text) as posts,
+				  GROUP_CONCAT(DISTINCT ct.topic) as topics,
+				  GROUP_CONCAT(DISTINCT ca.adjective) as adjectives
+				FROM characters c
+				LEFT JOIN character_clients cc ON c.id = cc.character_id
+				LEFT JOIN character_lore cl ON c.id = cl.character_id
+				LEFT JOIN character_posts cp ON c.id = cp.character_id
+				LEFT JOIN character_topics ct ON c.id = ct.character_id
+				LEFT JOIN character_adjectives ca ON c.id = ca.character_id
+				WHERE c.author = ? AND c.slug = ?
+				GROUP BY c.id
+				LIMIT 1
+				`, author, slug).toArray();
 
 			if (character.length === 0) {
 				return null;
@@ -1159,6 +1205,12 @@ export class CharacterRegistryDO {
 				adjectives: char.adjectives ? char.adjectives.split(',').filter(Boolean) : [],
 				settings: JSON.parse(char.settings || '{}'),
 				wallets,
+				companion_slug: char.companion_slug,
+				equipped_inventory: JSON.parse(char.equipped_inventory || '[]'),
+				approval_channel: char.approval_channel,
+				mood: char.mood || 'normal',
+				stats: JSON.parse(char.stats || '{}'),
+				extras: JSON.parse(char.extras || '{}'),
 				created_at: char.created_at,
 				updated_at: char.updated_at
 			};
@@ -1176,21 +1228,27 @@ export class CharacterRegistryDO {
 			const featuredCharacters = [];
 			for (const author of featuredAuthors) {
 				const characters = await this.sql.exec(`
-			  SELECT c.*, 
-				c.vrm_url,  
-				c.profile_img,
-				c.banner_img,         
-				c.model_provider,
-				c.bio,
-				c.status,
-				c.slug,
-				c.settings,
-				c.created_at,
-				c.updated_at
-			  FROM characters c
-			  WHERE c.author = ?
-			  ORDER BY c.updated_at ASC
-			`, author).toArray();
+					SELECT c.*, 
+						c.vrm_url,  
+						c.profile_img,
+						c.banner_img,         
+						c.model_provider,
+						c.bio,
+						c.status,
+						c.slug,
+						c.companion_slug,
+						c.equipped_inventory,
+						c.approval_channel,
+						c.mood,
+						c.stats,
+						c.extras,
+						c.settings,
+						c.created_at,
+						c.updated_at
+					FROM characters c
+					WHERE c.author = ?
+					ORDER BY c.updated_at ASC
+					`, author).toArray();
 
 				featuredCharacters.push(...await Promise.all(characters.map(async char => {
 					const wallets = await this.getCharacterWallets(char.id);
@@ -1205,6 +1263,12 @@ export class CharacterRegistryDO {
 						bannerImg: char.banner_img,
 						modelProvider: char.model_provider,
 						wallets,
+						companion_slug: char.companion_slug,
+						equipped_inventory: JSON.parse(char.equipped_inventory || '[]'),
+						approval_channel: char.approval_channel,
+						mood: char.mood || 'normal',
+						stats: JSON.parse(char.stats || '{}'),
+						extras: JSON.parse(char.extras || '{}'),
 						created_at: char.created_at,
 						updated_at: char.updated_at
 					};
@@ -2081,7 +2145,53 @@ export class CharacterRegistryDO {
 
 	// Add scheduled cleanup
 	async scheduled(controller, env, ctx) {
+		console.log('CharacterRegistryDO scheduled event received:', {
+			cron: controller.cron,
+			time: new Date().toISOString()
+		});
+
 		await this.nonceManager.cleanupExpiredNonces();
+		
+		// Check and execute pending plans
+		await this.planGenerator.checkAndExecutePlans();
+
+		// Generate new plans for all characters except unawoken ones
+		if (controller.cron === "0 6 * * *") {
+			console.log('Starting plan generation for all characters');
+			try {
+				// Get all characters except unawoken ones
+				const characters = await this.sql.exec(`
+					SELECT author as userId, name as characterName 
+					FROM characters 
+					WHERE status != 'unawoken' OR status IS NULL
+				`).toArray();
+
+				console.log(`Found ${characters.length} characters to generate plans for`);
+
+				// Generate new plans for each character
+				for (const character of characters) {
+					try {
+						console.log(`Generating plan for character: ${character.characterName}`);
+						await this.planGenerator.generatePlan(new Request('http://internal/generate-plan', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify(character)
+						}));
+						console.log(`Successfully generated plan for ${character.characterName}`);
+					} catch (error) {
+						console.error(`Failed to generate plan for character ${character.characterName}:`, error);
+						continue;
+					}
+				}
+				console.log('Completed plan generation for all characters');
+			} catch (error) {
+				console.error('Failed to generate daily plans:', error);
+			}
+		} else {
+			console.log('Cron pattern did not match plan generation time:', controller.cron);
+		}
+
+		return new Response('Scheduled tasks completed', { status: 200 });
 	}
 
 	async updateCharacterMetadata(author, character) {
@@ -2110,7 +2220,7 @@ export class CharacterRegistryDO {
 				JSON.stringify(settingsWithoutSecrets),
 				character.status || 'private',
 				author,
-				character.slug  // Changed from character.name
+				character.slug
 			).toArray();
 
 			if (!result.length) {
@@ -2216,7 +2326,7 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async updateCharacterImages(author, slug, updates) {  // Changed from characterName to slug
+	async updateCharacterImages(author, slug, updates) {
 		try {
 			const updateFields = [];
 			const params = [];
@@ -2234,13 +2344,13 @@ export class CharacterRegistryDO {
 				throw new Error('No image updates provided');
 			}
 
-			params.push(author, slug);  // Changed from characterName to slug
+			params.push(author, slug);
 
 			const result = await this.sql.exec(`
 				UPDATE characters 
 				SET ${updateFields.join(', ')},
 					updated_at = CURRENT_TIMESTAMP
-				WHERE author = ? AND slug = ?  // Changed from name to slug
+				WHERE author = ? AND slug = ?
 				RETURNING *
 			  `, ...params).toArray();
 
@@ -2255,7 +2365,7 @@ export class CharacterRegistryDO {
 		}
 	}
 
-	async updateCharacterSecrets(author, slug, secrets) {  // Changed from characterName to slug
+	async updateCharacterSecrets(author, slug, secrets) {
 		try {
 			// First get the character ID
 			const characters = await this.sql.exec(`
@@ -3234,13 +3344,21 @@ export class CharacterRegistryDO {
 	}
 
 	async fetch(request) {
+		const url = new URL(request.url);
+		
+		// Add debug logging for internal/scheduled route
+		if (url.pathname === '/scheduled') {
+			console.log('Received internal scheduled request');
+			const { cron } = await request.json();
+			console.log('Cron pattern received:', cron);
+			return await this.scheduled({ cron }, this.env, {});
+		}
+
 		if (request.method === "GET") {
 			return new Response("Method not allowed", { status: 405 });
 		}
 
 		if (request.method === "POST") {
-			const url = new URL(request.url);
-
 			switch (url.pathname) {
 				case '/export-character': {
 					return await this.handleCharacterExport(request);
@@ -3703,11 +3821,685 @@ export class CharacterRegistryDO {
 						});
 					}
 				}
+				case '/handle-asset-chunk-upload': {
+					return await this.handleAssetChunkUpload(request);
+				}
+				case '/handle-asset-upload-complete': {
+					return await this.handleAssetUploadComplete(request);
+				}
+				case '/get-character-assets': {
+					return await this.handleGetCharacterAssets(request);
+				}
+				case '/delete-asset': {
+					return await this.handleDeleteAsset(request);
+				}
+				case '/update-asset-metadata': {
+					return await this.handleUpdateAssetMetadata(request);
+				}
+				case '/handle-asset-thumbnail-upload': {
+					return await this.handleAssetThumbnailUpload(request);
+				}
+				case '/generate-prompt': {
+					return await this.handleGeneratePrompt(request);
+				}
+				case '/generate-plan': {
+					return await this.handleGeneratePlan(request);
+				}
+				case '/get-plan': {
+					const { userId, characterName } = await request.json();
+					const character = await this.getCharacter(userId, characterName);
+					if (!character) {
+						return new Response(JSON.stringify({ error: 'Character not found' }), {
+							status: 404,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+					
+					const planKey = await this.planGenerator.getPlanKey(character.id);
+					const plan = await this.env.CHARACTER_PLANS.get(planKey);
+					
+					return new Response(plan || JSON.stringify({ error: 'No plan found for today' }), {
+						status: plan ? 200 : 404,
+						headers: { 
+							'Content-Type': 'application/json',
+							'Access-Control-Allow-Origin': '*',
+							'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+							'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+						}
+					});
+				}
 				default:
 					return new Response('Not found', { status: 404 });
 			}
 		}
 
 		return new Response('Method not allowed', { status: 405 });
+	}
+
+	async migrateCharacterExtras() {
+		try {
+		  await this.sql.exec('PRAGMA foreign_keys = OFF;');
+	  
+		  // Get existing columns
+		  const tableInfo = await this.sql.exec('PRAGMA table_info(characters)').toArray();
+		  const columns = tableInfo.map(col => col.name);
+	  
+		  // Add companion_slug if it doesn't exist
+		  if (!columns.includes('companion_slug')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN companion_slug TEXT');
+		  }
+	  
+		  // Add equipped_inventory if it doesn't exist
+		  if (!columns.includes('equipped_inventory')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN equipped_inventory TEXT DEFAULT "[]"');
+		  }
+	  
+		  // Add approval_channel if it doesn't exist
+		  if (!columns.includes('approval_channel')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN approval_channel TEXT');
+		  }
+	  
+		  // Add mood if it doesn't exist
+		  if (!columns.includes('mood')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN mood TEXT DEFAULT "normal"');
+		  }
+	  
+		  // Add stats if it doesn't exist
+		  if (!columns.includes('stats')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN stats TEXT DEFAULT "{}"');
+		  }
+	  
+		  // Add extras if it doesn't exist
+		  if (!columns.includes('extras')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN extras TEXT DEFAULT "{}"');
+		  }
+	  
+		  // Add private_extras if it doesn't exist
+		  if (!columns.includes('private_extras')) {
+			await this.sql.exec('ALTER TABLE characters ADD COLUMN private_extras TEXT DEFAULT "{}"');
+		  }
+	  
+		  await this.sql.exec('PRAGMA foreign_keys = ON;');
+		  return true;
+		} catch (error) {
+		  console.error('Error in character extras migration:', error);
+		  await this.sql.exec('PRAGMA foreign_keys = ON;');
+		  throw error;
+		}
+	  }
+
+	async migrateAssetSchema() {
+		try {
+			// Drop existing tables
+			await this.sql.exec('DROP TABLE IF EXISTS character_assets');
+			await this.sql.exec('DROP TABLE IF EXISTS character_asset_chunks');
+	
+			// Create character_assets table with userId field
+			await this.sql.exec(`
+				CREATE TABLE character_assets (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					user_id TEXT NOT NULL,
+					slug TEXT NOT NULL,
+					filename TEXT NOT NULL,
+					original_filename TEXT NOT NULL,
+					filesize INTEGER NOT NULL,
+					file_type TEXT NOT NULL,
+					file_url TEXT NOT NULL,
+					thumb_url TEXT,
+					tags TEXT,
+					categories TEXT,
+					metadata TEXT,
+					background TEXT,
+					status TEXT DEFAULT 'active',
+					created_at INTEGER DEFAULT (unixepoch()),
+					updated_at INTEGER DEFAULT (unixepoch()),
+					UNIQUE(user_id, slug, filename)
+				)
+			`);
+	
+			// Create indexes
+			await this.sql.exec(`
+				CREATE INDEX idx_assets_user_slug ON character_assets(user_id, slug);
+				CREATE INDEX idx_assets_status ON character_assets(status);
+				CREATE INDEX idx_assets_type ON character_assets(file_type);
+			`);
+	
+			return true;
+		} catch (error) {
+			console.error('Error in asset schema migration:', error);
+			throw error;
+		}
+	}
+	
+	async handleAssetChunkUpload(request) {
+		try {
+			const { fileName, fileData, chunkNumber, totalChunks, uploadId, slug, userId } = await request.json();
+			console.log('File Name:', fileName);
+			console.log('Chunk Number:', chunkNumber);
+			console.log('Total Chunks:', totalChunks);
+			console.log('Upload ID:', uploadId);
+			console.log('Slug:', slug);
+			console.log('User ID:', userId);
+	
+			// Verify character exists
+			const character = await this.sql.exec(`
+				SELECT slug FROM characters WHERE slug = ? AND author = ?
+			`, slug, userId).toArray();
+	
+			if (!character.length) {
+				return new Response(JSON.stringify({
+					error: 'Character not found'
+				}), {
+					status: 404,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+	
+			const sanitizedFileName = fileName.replace(/\s/g, '-').toLowerCase();
+			const chunkKey = `temp/characters/${userId}/${slug}/chunks_${sanitizedFileName}/${sanitizedFileName}_chunk_${chunkNumber}_${totalChunks}`;
+	
+			// Store chunk in R2 bucket
+			const chunkBuffer = Uint8Array.from(atob(fileData), (c) => c.charCodeAt(0));
+			await this.env.WORLD_BUCKET.put(chunkKey, chunkBuffer, {
+				httpMetadata: {
+					contentType: 'application/octet-stream'
+				}
+			});
+	
+			// Check if all chunks are uploaded by listing the directory
+			const prefix = `temp/characters/${userId}/${slug}/chunks_${sanitizedFileName}/`;
+			const chunksList = await this.env.WORLD_BUCKET.list({ prefix });
+			const isComplete = chunksList.objects.length === totalChunks;
+	
+			return new Response(JSON.stringify({
+				success: true,
+				isComplete,
+				message: 'Chunk uploaded successfully'
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+	
+		} catch (error) {
+			console.error('Chunk upload error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to upload chunk',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+	
+	async handleAssetUploadComplete(request) {
+		try {
+			const { 
+				userId,
+				slug, 
+				uploadId, 
+				fileName, 
+				fileType,
+				fileSize,
+				tags,
+				thumb,
+				categories,
+				metadata,
+				background 
+			} = await request.json();
+	
+			const sanitizedFileName = fileName.replace(/\s/g, '-').toLowerCase();
+			const prefix = `temp/characters/${userId}/${slug}/chunks_${sanitizedFileName}/`;
+			
+			// List all chunks from R2
+			const chunksList = await this.env.WORLD_BUCKET.list({ prefix });
+			const sortedChunks = chunksList.objects.sort((a, b) => {
+				const aNum = parseInt(a.key.match(/chunk_(\d+)_/)[1]);
+				const bNum = parseInt(b.key.match(/chunk_(\d+)_/)[1]);
+				return aNum - bNum;
+			});
+	
+			// Combine chunks from R2
+			const fileBuffer = new Uint8Array(fileSize);
+			let offset = 0;
+			
+			for (const chunk of sortedChunks) {
+				const chunkObj = await this.env.WORLD_BUCKET.get(chunk.key);
+				if (!chunkObj) continue;
+				
+				const chunkArrayBuffer = await chunkObj.arrayBuffer();
+				const chunkData = new Uint8Array(chunkArrayBuffer);
+				fileBuffer.set(chunkData, offset);
+				offset += chunkData.byteLength;
+			}
+	
+			// Upload combined file to final location
+			const objectKey = `characters/${userId}/${slug}/${sanitizedFileName}`;
+			await this.env.WORLD_BUCKET.put(objectKey, fileBuffer, {
+				httpMetadata: {
+					contentType: fileType
+				}
+			});
+	
+			const fileUrl = `${this.env.WORLD_BUCKET_URL}/${objectKey}`;
+
+			// use the thumb object which is base64 encoded to upload the thumbnail to the thumbs folder
+			const thumbData = Uint8Array.from(atob(thumb.replace(/^data:image\/\w+;base64,/, '')), c => c.charCodeAt(0));
+			const thumbExt = thumb.match(/^data:image\/(\w+);base64,/)[1];
+			const validExts = ['jpeg', 'jpg', 'webp', 'png'];
+			const ext = validExts.includes(thumbExt) ? thumbExt : 'webp';
+			const thumbKey = `characters/${userId}/${slug}/thumbs/${sanitizedFileName}-thumb.${ext}`;
+			await this.env.WORLD_BUCKET.put(thumbKey, thumbData, {
+				httpMetadata: {
+					contentType: `image/${ext}`
+				}
+			});
+			// url of the thumbnail
+			const thumbUrl = `${this.env.WORLD_BUCKET_URL}/${thumbKey}`;
+
+			// Store asset metadata in SQLite
+			await this.sql.exec(`
+				INSERT INTO character_assets (
+					user_id,
+					slug,
+					filename,
+					original_filename,
+					filesize,
+					file_type,
+					file_url,
+					thumb_url,
+					tags,
+					categories,
+					metadata,
+					background
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, 
+			userId,
+			slug,
+			sanitizedFileName,
+			fileName,
+			fileSize,
+			fileType,
+			fileUrl,
+			thumbUrl,
+			JSON.stringify(tags),
+			JSON.stringify(categories),
+			JSON.stringify(metadata),
+			JSON.stringify(background)
+			);
+			// Clean up temp chunks from R2
+			for (const chunk of sortedChunks) {
+				await this.env.WORLD_BUCKET.delete(chunk.key);
+			}
+	
+			return new Response(JSON.stringify({
+				success: true,
+				fileUrl,
+				message: 'Asset upload completed successfully'
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+	
+		} catch (error) {
+			console.error('Upload completion error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to complete upload',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+	
+	async handleGetCharacterAssets(request) {
+		try {
+			const { userId, slug, searchTerm, categories, limit = 20, offset = 0 } = await request.json();
+	
+			let query = 'SELECT * FROM character_assets WHERE user_id = ? AND slug = ?';
+			const params = [userId, slug];
+	
+			if (searchTerm) {
+				query += ' AND (tags LIKE ? OR filename LIKE ? OR original_filename LIKE ?)';
+				const searchPattern = `%${searchTerm}%`;
+				params.push(searchPattern, searchPattern, searchPattern);
+			}
+	
+			if (categories) {
+				const categoryList = JSON.parse(categories);
+				if (categoryList.length > 0) {
+					const categoryPatterns = categoryList.map(cat => {
+						params.push(`%${cat}%`);
+						return 'categories LIKE ?';
+					});
+					query += ` AND (${categoryPatterns.join(' OR ')})`;
+				}
+			}
+	
+			query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+			params.push(limit, offset);
+	
+			const assets = await this.sql.exec(query, ...params).toArray();
+	
+			// Parse JSON fields
+			const parsedAssets = assets.map(asset => ({
+				...asset,
+				tags: JSON.parse(asset.tags || '[]'),
+				categories: JSON.parse(asset.categories || '[]'),
+				metadata: JSON.parse(asset.metadata || '{}'),
+				background: JSON.parse(asset.background || '{}')
+			}));
+	
+			return new Response(JSON.stringify(parsedAssets), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		} catch (error) {
+			console.error('Get assets error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to retrieve assets',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+	
+	async handleDeleteAsset(request) {
+		try {
+			const { userId, slug, assetId } = await request.json();
+	
+			// Get asset info
+			const asset = await this.sql.exec(`
+				SELECT filename, file_url
+				FROM character_assets
+				WHERE id = ? AND user_id = ? AND slug = ?
+			`, assetId, userId, slug).toArray();
+	
+			if (!asset.length) {
+				return new Response(JSON.stringify({
+					error: 'Asset not found'
+				}), {
+					status: 404,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+	
+			// Delete from R2
+			const objectKey = `characters/${userId}/${slug}/${asset[0].filename}`;
+			await this.env.WORLD_BUCKET.delete(objectKey);
+	
+			// Delete thumbnail if it exists
+			const thumbKey = `characters/${userId}/${slug}/thumbs/${asset[0].filename}-thumb.webp`;
+			await this.env.WORLD_BUCKET.delete(thumbKey);
+	
+			// Delete from database
+			await this.sql.exec(`
+				DELETE FROM character_assets
+				WHERE id = ? AND user_id = ? AND slug = ?
+			`, assetId, userId, slug);
+	
+			return new Response(JSON.stringify({
+				success: true,
+				message: 'Asset deleted successfully'
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+	
+		} catch (error) {
+			console.error('Delete asset error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to delete asset',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+	
+	async handleUpdateAssetMetadata(request) {
+		try {
+			const { 
+				userId,
+				slug, 
+				assetId, 
+				tags, 
+				categories, 
+				metadata,
+				background 
+			} = await request.json();
+	
+			await this.sql.exec(`
+				UPDATE character_assets
+				SET 
+					tags = ?,
+					categories = ?,
+					metadata = ?,
+					background = ?,
+					updated_at = unixepoch()
+				WHERE id = ? AND user_id = ? AND slug = ?
+			`, 
+			JSON.stringify(tags),
+			JSON.stringify(categories),
+			JSON.stringify(metadata),
+			JSON.stringify(background),
+			assetId,
+			userId,
+			slug);
+	
+			// Fetch the updated record
+			const result = await this.sql.exec(`
+				SELECT * FROM character_assets
+				WHERE id = ? AND user_id = ? AND slug = ?
+			`, assetId, userId, slug).toArray();
+	
+			if (!result.length) {
+				return new Response(JSON.stringify({
+					error: 'Asset not found'
+				}), {
+					status: 404,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+	
+			// Parse JSON fields
+			const updatedAsset = {
+				...result[0],
+				tags: JSON.parse(result[0].tags || '[]'),
+				categories: JSON.parse(result[0].categories || '[]'),
+				metadata: JSON.parse(result[0].metadata || '{}'),
+				background: JSON.parse(result[0].background || '{}')
+			};
+	
+			return new Response(JSON.stringify({
+				success: true,
+				asset: updatedAsset,
+				message: 'Asset metadata updated successfully'
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+	
+		} catch (error) {
+			console.error('Update asset metadata error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to update asset metadata',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+	
+	async handleAssetThumbnailUpload(request) {
+		try {
+			const { userId, slug, assetId, thumb } = await request.json();
+	
+			// Get asset info
+			const asset = await this.sql.exec(`
+				SELECT filename
+				FROM character_assets
+				WHERE id = ? AND user_id = ? AND slug = ?
+			`, assetId, userId, slug).toArray();
+	
+			if (!asset.length) {
+				return new Response(JSON.stringify({
+					error: 'Asset not found'
+				}), {
+					status: 404,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+	
+			// Convert base64 to buffer
+			const thumbBuffer = Uint8Array.from(atob(thumb.replace(/^data:image\/\w+;base64,/, '')), c => c.charCodeAt(0));
+			
+			// Generate thumbnail filename and path
+			const thumbFileName = `${asset[0].filename}-thumb.webp`;
+			const thumbKey = `characters/${userId}/${slug}/thumbs/${thumbFileName}`;
+	
+			// Upload thumbnail to R2
+			await this.env.WORLD_BUCKET.put(thumbKey, thumbBuffer, {
+				httpMetadata: {
+					contentType: 'image/webp'
+				}
+			});
+	
+			const thumbUrl = `${this.env.WORLD_BUCKET_URL}/${thumbKey}`;
+	
+			// Update asset record with thumbnail URL
+			await this.sql.exec(`
+				UPDATE character_assets
+				SET 
+					thumb_url = ?,
+					updated_at = unixepoch()
+				WHERE id = ? AND user_id = ? AND slug = ?
+			`, thumbUrl, assetId, userId, slug);
+	
+			return new Response(JSON.stringify({
+				success: true,
+				thumbUrl,
+				message: 'Thumbnail uploaded successfully'
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+	
+		} catch (error) {
+			console.error('Thumbnail upload error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to upload thumbnail',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+
+	async handleGeneratePrompt(request) {
+		try {
+			const { userId, characterName } = await request.json();
+			
+			// Get the character
+			const character = await this.getCharacter(userId, characterName);
+			if (!character) {
+				throw new Error('Character not found');
+			}
+
+			// Get character secrets for AI integration
+			const secrets = await this.getCharacterSecrets(character.id);
+			if (!secrets) {
+				throw new Error('Character secrets not found');
+			}
+
+			// Initialize runtime with character data
+			const runtime = await this.initializeRuntime(character, secrets);
+			const sessionId = crypto.randomUUID();
+			const roomId = await this.initializeCharacterRoom(userId, characterName, sessionId);
+
+			// Create system message with character context
+			const systemMessage = `You are ${character.name}. ${character.bio}
+
+Key Character Traits:
+${character.adjectives.map(adj => `- ${adj}`).join('\n')}
+
+Style Guidelines:
+${character.style?.all.map(style => `- ${style}`).join('\n')}
+${character.style?.post.map(style => `- ${style}`).join('\n')}
+
+Task: Generate a topic for a tweet that would be interesting and relevant to your character's personality and interests. 
+The topic should be something you'd naturally want to discuss.
+Respond with just the topic in a single sentence, no additional commentary.`;
+
+			// Make API call with proper timeout
+			const controller = new AbortController();
+			const timeout = setTimeout(() => controller.abort(), 25000);
+
+			try {
+				const response = await fetch(
+					`https://gateway.ai.cloudflare.com/v1/${this.env.CF_ACCOUNT_ID}/${this.env.CF_GATEWAY_ID}/openai/chat/completions`,
+					{
+						method: 'POST',
+						headers: {
+							'Content-Type': 'application/json',
+							'Authorization': `Bearer ${this.env.OPENAI_API_KEY}`
+						},
+						body: JSON.stringify({
+							model: 'gpt-4o-mini',
+							messages: [
+								{ role: "system", content: systemMessage },
+								{ role: "user", content: "Generate a tweet topic that would be interesting to me." }
+							],
+							max_tokens: 150,
+							temperature: 0.7,
+							presence_penalty: 0.6
+						}),
+						signal: controller.signal
+					}
+				);
+
+				clearTimeout(timeout);
+
+				if (!response.ok) {
+					throw new Error(`API call failed: ${response.status}`);
+				}
+
+				const result = await response.json();
+				const topic = result.choices[0].message.content;
+
+				return new Response(JSON.stringify({
+					prompt: `${userId} has requested you generate a tweet on the following topic: ${topic}`,
+					topic: topic
+				}), {
+					headers: { 
+						'Content-Type': 'application/json',
+						'Access-Control-Allow-Origin': '*',
+						'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+						'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+					}
+				});
+
+			} catch (error) {
+				if (error.name === 'AbortError') {
+					throw new Error('API request timed out after 25 seconds');
+				}
+				throw error;
+			} finally {
+				clearTimeout(timeout);
+			}
+		} catch (error) {
+			console.error('Generate prompt error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to generate prompt',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+
+	async handleGeneratePlan(request) {
+		return await this.planGenerator.generatePlan(request);
 	}
 }

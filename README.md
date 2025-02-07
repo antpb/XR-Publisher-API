@@ -17,9 +17,37 @@ Before you begin, ensure you have the following:
 The `wrangler.toml` file contains the configuration for your worker and R2 bucket. Key configurations include:
 
 ### KV Namespaces
-- `VISIT_COUNTS`: Tracks world visits
-- `DOWNLOAD_RATELIMIT`: Manages rate limiting
-- `DOWNLOAD_QUEUE`: Handles download queues
+- `CHARACTER_PLANS`: Stores daily activity plans for characters, with keys in format `plan_{characterId}_{YYYY-MM-DD}`
+- `VISIT_COUNTS`: Tracks world visits and analytics
+- `DOWNLOAD_RATELIMIT`: Manages rate limiting for world downloads
+- `DOWNLOAD_QUEUE`: Handles download queues for large world files
+
+Each KV namespace serves a specific purpose:
+
+### CHARACTER_PLANS
+- Stores daily generated plans for each character
+- Keys are time-based and character-specific
+- Used by the planning system to track and execute character activities
+- Automatically cleaned up after plans expire
+- Example key: `plan_123_2024-02-03`
+
+### VISIT_COUNTS
+- Tracks analytics for world visits
+- Helps measure world popularity
+- Used for featured worlds ranking
+- Aggregates visit data over time
+
+### DOWNLOAD_RATELIMIT
+- Prevents abuse of download endpoints
+- Tracks IP-based rate limits
+- Ensures fair usage of bandwidth
+- Configurable limits per time window
+
+### DOWNLOAD_QUEUE
+- Manages asynchronous download requests
+- Handles large world downloads
+- Prevents server overload
+- Provides status tracking for downloads
 
 ### Durable Objects
 - `WORLD_REGISTRY`: Class name (`WorldRegistryDO`)
@@ -83,6 +111,93 @@ The `wrangler.toml` file contains the configuration for your worker and R2 bucke
 - `/api/character/find-memory`: Search character memories
 - `/api/character/delete-memory`: Delete a specific memory
 - `/api/character/update-memory`: Update an existing memory
+
+### Character Activity Planning
+
+The system includes a sophisticated planning system that allows characters to generate and execute daily activity plans. Plans are stored in a dedicated KV store named `CHARACTER_PLANS`.
+
+#### Generate Tweet Prompt
+- Endpoint: `POST /api/character/generate-prompt`
+- Authentication: Required
+- Description: Generates a contextually appropriate tweet prompt based on the character's personality and style
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+- Response:
+  ```json
+  {
+    "topic": "string",
+    "context": "string"
+  }
+  ```
+
+#### Generate Daily Plan
+- Endpoint: `POST /api/character/generate-plan`
+- Authentication: Required
+- Description: Creates a daily plan of activities for the character, including social media interactions, world visits, and messaging
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+- Response:
+  ```json
+  {
+    "plan": [
+      {
+        "time": "UTC timestamp in ISO format",
+        "action": "string (one of: tweet, tweet_with_media, like, reply, retweet, telegram_message, telegram_reply, telegram_edit, telegram_pin, discord_message, discord_reply, discord_react, discord_pin, discord_thread, visit_world)",
+        "reason": "string explaining why this action at this time",
+        "status": "string (pending, completed, failed)"
+      }
+    ],
+    "characterId": "string",
+    "characterName": "string",
+    "userId": "string",
+    "generatedAt": "ISO timestamp",
+    "lastChecked": "ISO timestamp"
+  }
+  ```
+
+#### Get Current Plan
+- Endpoint: `POST /api/character/get-plan`
+- Authentication: Required
+- Description: Retrieves the current day's plan for a character from the KV store
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+- Response: Same format as generate-plan response
+
+### Plan Storage and Execution
+
+Plans are stored in Cloudflare KV with the following characteristics:
+- Key format: `plan_{characterId}_{YYYY-MM-DD}`
+- Daily plans are automatically generated and stored
+- Plans include a mix of social media and world interaction activities
+- Each action includes execution status tracking
+- Plans are executed based on UTC timestamps
+- Failed actions are logged with error details
+- Plan execution status is updated in real-time
+
+### Best Practices for Character Plans
+
+1. Generate plans during low-activity periods
+2. Include a mix of different action types
+3. Space activities throughout the day
+4. Consider character's timezone and typical active hours
+5. Monitor plan execution status
+6. Handle failed actions appropriately
+7. Regular cleanup of old plans
 
 ## Backup System
 
@@ -383,428 +498,44 @@ The search functionality includes:
 6. Regular backups of critical memories
 7. Proper security checks before operations
 
-## Social Media Integration
+### Extended Character Fields
+The character system includes several specialized fields for enhanced functionality:
 
-### Twitter Endpoints
+#### Companion System
+- `companion_slug`: Links characters together, enabling companion relationships and interactions
+- Useful for creating character networks and relationships
+- Enables cross-character memory sharing and interactions
 
-#### Post Tweet
-- Endpoint: `POST /api/twitter/post`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "tweet": "string",
-    "sessionId": "string",
-    "roomId": "string",
-    "nonce": "string"
-  }
-  ```
+#### Equipment System
+- `equipped_inventory`: JSON array storing currently equipped items
+- Supports virtual item management
+- Can affect character behavior and capabilities
+- Stored as stringified JSON for flexibility
 
-#### Post Tweet with Media
-- Endpoint: `POST /api/twitter/post-with-media`
-- Authentication: Required
-- Request Body: FormData containing:
-  - `userId`: Character owner's ID
-  - `characterName`: Character's name
-  - Media file(s)
+#### Approval and Moderation
+- `approval_channel`: Configures where moderation requests are sent
+- Enables content filtering and approval workflows
+- Can be used for multi-stage content review
 
-#### Get Twitter Notifications
-- Endpoint: `POST /api/twitter/notifications`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "sessionId": "string",
-    "roomId": "string",
-    "nonce": "string"
-  }
-  ```
+#### Character State
+- `mood`: Tracks character's current emotional state
+- Defaults to "normal"
+- Influences character responses and behavior
+- Can be updated based on interactions
 
-#### Retweet
-- Endpoint: `POST /api/twitter/retweet`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "tweetId": "string",
-    "quoteText": "string"
-  }
-  ```
+#### Stats and Metrics
+- `stats`: JSON object storing character statistics
+- Can track interaction metrics, preferences, and other numerical data
+- Useful for character development and progression
+- Stored as stringified JSON for flexibility
 
-#### Reply to Tweet
-- Endpoint: `POST /api/twitter/reply`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "tweetId": "string",
-    "replyText": "string"
-  }
-  ```
-
-#### Like Tweet
-- Endpoint: `POST /api/twitter/like`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "tweetId": "string"
-  }
-  ```
-
-#### Classify Tweet Content
-- Endpoint: `POST /api/twitter/classify`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "text": "string"
-  }
-  ```
-
-#### Get Twitter Credentials
-- Endpoint: `POST /get-my-twitter-credentials`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string"
-  }
-  ```
-
-### Telegram Endpoints
-
-#### Send Message
-- Endpoint: `POST /api/telegram/message`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "chatId": "string",
-    "message": "string",
-    "sessionId": "string",
-    "roomId": "string",
-    "nonce": "string"
-  }
-  ```
-
-#### Get Updates
-- Endpoint: `POST /api/telegram/updates`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "sessionId": "string",
-    "roomId": "string",
-    "nonce": "string"
-  }
-  ```
-
-#### Reply to Message
-- Endpoint: `POST /api/telegram/reply`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "messageId": "string",
-    "replyText": "string",
-    "chatId": "string",
-    "sessionId": "string",
-    "roomId": "string",
-    "nonce": "string"
-  }
-  ```
-
-#### Edit Message
-- Endpoint: `POST /api/telegram/edit`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "messageId": "string",
-    "newText": "string",
-    "chatId": "string",
-    "sessionId": "string",
-    "roomId": "string",
-    "nonce": "string"
-  }
-  ```
-
-#### Pin Message
-- Endpoint: `POST /api/telegram/pin`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "messageId": "string",
-    "chatId": "string",
-    "sessionId": "string",
-    "roomId": "string",
-    "nonce": "string"
-  }
-  ```
-
-#### Get Messages
-- Endpoint: `POST /api/telegram/messages`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "chatId": "string",
-    "sessionId": "string",
-    "roomId": "string",
-    "nonce": "string"
-  }
-  ```
-
-#### Get Telegram Credentials
-- Endpoint: `POST /get-my-telegram-credentials`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string"
-  }
-  ```
-
-## Discord Integration
-
-#### Get Discord Credentials
-- Endpoint: `POST /discord-credentials`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string"
-  }
-  ```
-
-#### Handle Discord Interactions
-- Endpoint: `POST /interactions`
-- Authentication: Not Required
-- Headers Required:
-  - `x-signature-ed25519`
-  - `x-signature-timestamp`
-- Request Body: Discord interaction payload
-
-#### Initialize Discord Bot
-- Endpoint: `POST /discord/init`
-- Authentication: Not Required
-- Request Body:
-  ```json
-  {
-    "applicationId": "string"
-  }
-  ```
-
-#### Check Discord Bot Status
-- Endpoint: `POST /discord/check`
-- Authentication: Not Required
-- Request Body:
-  ```json
-  {
-    "applicationId": "string"
-  }
-  ```
-
-## Vision and AI Endpoints
-
-#### Generate Character
-- Endpoint: `POST /generate-character`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "prompt": "string"
-  }
-  ```
-
-#### Describe Image
-- Endpoint: `POST /api/vision/describe`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "image": "string" // URL of the image
-  }
-  ```
-
-## Character Import/Export
-
-#### Export Character
-- Endpoint: `POST /api/character/export`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string"
-  }
-  ```
-
-#### Import New Character
-- Endpoint: `POST /api/character/import-new`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "importData": {
-      "character": {
-        "name": "string",
-        "model_provider": "string",
-        "status": "string",
-        "bio": "string",
-        // ... other character fields
-      }
-    }
-  }
-  ```
-
-## System Management Endpoints
-
-#### Migrate Data
-- Endpoint: `POST /migrate-data`
-- Authentication: Required (Admin)
-
-#### Migrate Authors
-- Endpoint: `POST /migrate-authors`
-- Authentication: Required (Admin)
-
-#### Migrate Character Schema
-- Endpoint: `POST /migrate-character-schema`
-- Authentication: Required (Admin)
-
-#### Clear Cache
-- Endpoint: `POST /clear-cache`
-- Authentication: Required (Admin)
-
-#### Record Visit
-- Endpoint: `POST /record-visit`
-- Authentication: Not Required
-- Query Parameters:
-  - `author`: Author name
-  - `slug`: World slug
-
-#### Upload Character Image
-- Endpoint: `POST /upload-character-image`
-- Authentication: Required
-- Request Body: FormData containing image file
-
-#### Update Character Keys
-- Endpoint: `POST /update-character-keys`
-- Authentication: Required
-- Request Body:
-  ```json
-  {
-    "userId": "string",
-    "characterName": "string",
-    "keys": {
-      // API keys and credentials
-    }
-  }
-  ```
-
-## Authentication System
-
-### Public Endpoints
-- `/register`: Get registration page HTML
-- `/create-user`: Register new user (requires invite code)
-- `/roll-api-key`: Get API key roll interface
-- `/roll-key-with-token`: Complete key roll with verification token
-- `/initiate-key-roll`: Start key recovery process
-- `/verify-key-roll`: Complete key recovery with GitHub verification
-
-### Authenticated Endpoints
-- `/rotate-key`: Standard API key rotation
-- `/delete-user`: Remove user and associated data (admin only)
-- `/admin-update-user`: Update user details (admin only)
-
-## Authentication Requirements
-
-Most POST endpoints require authentication via API key in the Authorization header:
-
-```bash
-curl -X POST https://your-worker.dev/endpoint \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json"
-```
-
-Admin-only endpoints require the main API secret:
-```bash
-curl -X POST https://your-worker.dev/admin-update-user \
-  -H "Authorization: Bearer YOUR_API_SECRET" \
-  -H "Content-Type: 'application/json"
-```
-
-## User Management
-
-The Plugin Publishing System includes a robust user management system with secure registration, API key management, and GitHub-based verification.
-
-### Registration
-
-New users can register through the `/register` endpoint which provides a web interface for:
-- Creating a new author account
-- Setting up GitHub integration
-- Generating initial API credentials
-- Requiring invite codes for controlled access
-
-Registation workflow:
-1. User visits the registration page
-2. Provides username, email, GitHub username, and invite code
-3. System validates credentials and invite code
-4. Generates initial API key
-5. Downloads configuration file with credentials
-
-
-## Character System Features
-
-### Character Configuration
-Characters support rich configuration including:
-- Basic info (name, bio, status)
-- Model provider selection (OpenAI/Anthropic)
-- Communication channels (Discord, Direct)
-- Personality traits and topics
-- Message examples
-- Style settings
-- Custom API keys per character
-
-### Memory System
-Characters maintain:
-- Conversation history
-- User-specific memories
-- Room-based context
-- Memory importance scoring
-- Cross-room memory retrieval
+#### Extended Data Storage
+- `extras`: Public additional data storage
+- `private_extras`: Protected additional data storage
+- Both stored as JSON objects
+- `extras` is always returned to clients
+- `private_extras` is only accessible server-side
+- Useful for storing character-specific configuration and data
 
 ### Session Management
 - Secure session initialization
@@ -844,6 +575,13 @@ CREATE TABLE characters (
     profile_img TEXT,
     banner_img TEXT,
     status TEXT DEFAULT 'private',
+    companion_slug TEXT,
+    equipped_inventory TEXT DEFAULT '[]',
+    approval_channel TEXT,
+    mood TEXT DEFAULT 'normal',
+    stats TEXT DEFAULT '{}',
+    extras TEXT DEFAULT '{}',
+    private_extras TEXT DEFAULT '{}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(author, name)

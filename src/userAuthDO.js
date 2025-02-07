@@ -22,22 +22,44 @@ export class UserAuthDO {
 					key_id TEXT NOT NULL UNIQUE,
 					key_hash TEXT NOT NULL,
 					invite_code_used TEXT NOT NULL,
-					created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-					last_key_rotation TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+					created_at INTEGER DEFAULT (unixepoch()),
+					last_key_rotation INTEGER DEFAULT (unixepoch())
 				);
-	
+
 				CREATE INDEX IF NOT EXISTS idx_users_key_id 
 				ON users(key_id);
-	
+
 				CREATE TABLE IF NOT EXISTS key_roll_verifications (
 					id INTEGER PRIMARY KEY AUTOINCREMENT,
 					username TEXT NOT NULL,
 					verification_token TEXT NOT NULL UNIQUE,
-					created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-					expires_at TIMESTAMP NOT NULL,
-					used BOOLEAN DEFAULT 0,
+					created_at INTEGER DEFAULT (unixepoch()),
+					expires_at INTEGER NOT NULL,
+					used INTEGER DEFAULT 0,
 					FOREIGN KEY(username) REFERENCES users(username)
 				);
+
+				CREATE TABLE IF NOT EXISTS user_settings (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					username TEXT NOT NULL,
+					telegram_chat_id TEXT,
+					telegram_username TEXT,
+					verification_enabled INTEGER DEFAULT 1,
+					auto_approve_low_risk INTEGER DEFAULT 0,
+					companion_slug TEXT,
+					vrm_url TEXT,
+					created_at INTEGER DEFAULT (unixepoch()),
+					updated_at INTEGER DEFAULT (unixepoch()),
+					FOREIGN KEY(username) REFERENCES users(username),
+					UNIQUE(username)
+				);
+			`);
+
+			// Create default settings for existing users
+			await this.sql.exec(`
+				INSERT OR IGNORE INTO user_settings (username)
+				SELECT username FROM users
+				WHERE username NOT IN (SELECT username FROM user_settings)
 			`);
 		} catch (error) {
 			console.error("Error initializing user auth schema:", error);
@@ -45,6 +67,82 @@ export class UserAuthDO {
 		}
 	}
 
+	async migrateUserSettings() {
+		try {
+			// Check if columns exist and add if needed
+			const columns = await this.sql.exec("PRAGMA table_info(user_settings)").toArray();
+			
+			if (!columns.some(col => col.name === 'companion_slug')) {
+				await this.sql.exec("ALTER TABLE user_settings ADD COLUMN companion_slug TEXT");
+			}
+			
+			if (!columns.some(col => col.name === 'vrm_url')) {
+				await this.sql.exec("ALTER TABLE user_settings ADD COLUMN vrm_url TEXT");
+			}
+
+			return { success: true, message: 'User settings migration completed' };
+		} catch (error) {
+			console.error('User settings migration failed:', error);
+			throw error;
+		}
+	}
+
+	async updateUserSettings(username, settings) {
+		try {
+			await this.sql.exec(`
+				INSERT INTO user_settings (
+					username,
+					telegram_chat_id,
+					telegram_username,
+					verification_enabled,
+					auto_approve_low_risk,
+					companion_slug,
+					vrm_url,
+					updated_at
+				) VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+				ON CONFLICT(username) DO UPDATE SET
+					telegram_chat_id = ?,
+					telegram_username = ?,
+					verification_enabled = ?,
+					auto_approve_low_risk = ?,
+					companion_slug = ?,
+					vrm_url = ?,
+					updated_at = unixepoch()
+			`, 
+			username,
+			settings.telegram_chat_id,
+			settings.telegram_username,
+			settings.verification_enabled ? 1 : 0,
+			settings.auto_approve_low_risk ? 1 : 0,
+			settings.companion_slug,
+			settings.vrm_url,
+			// Repeat values for UPDATE part
+			settings.telegram_chat_id,
+			settings.telegram_username,
+			settings.verification_enabled ? 1 : 0,
+			settings.auto_approve_low_risk ? 1 : 0,
+			settings.companion_slug,
+			settings.vrm_url
+			);
+
+			return { success: true };
+		} catch (error) {
+			console.error('Failed to update user settings:', error);
+			throw error;
+		}
+	}
+
+	async getUserSettings(username) {
+		try {
+			return await this.sql.exec(
+				"SELECT * FROM user_settings WHERE username = ?",
+				username
+			).one();
+		} catch (error) {
+			console.error('Failed to get user settings:', error);
+			throw error;
+		}
+	}
 
 	// Generate a secure random key ID
 	generateKeyId() {
@@ -424,6 +522,103 @@ export class UserAuthDO {
 			const body = await request.json();
 
 			switch (url.pathname) {
+				case '/get-user-settings': {
+					const { username } = body;
+					console.log('Fetching settings for username:', username);
+
+					if (!username) {
+						console.error('Missing username in request body');
+						return new Response(JSON.stringify({
+							error: 'Missing username'
+						}), { status: 400 });
+					}
+
+					try {
+						// First check if user exists
+						const userExists = await this.sql.exec(
+							"SELECT * FROM users WHERE username = ?",
+							username
+						).toArray();
+						
+						console.log('User exists check:', userExists);
+
+						if (!userExists.length) {
+							console.error('User not found:', username);
+							return new Response(JSON.stringify({
+								error: 'User not found'
+							}), { status: 404 });
+						}
+
+						// Check if settings exist
+						const settings = await this.sql.exec(`
+							SELECT 
+								telegram_chat_id,
+								telegram_username,
+								verification_enabled,
+								auto_approve_low_risk,
+								companion_slug,
+								vrm_url
+							FROM user_settings
+							WHERE username = ?
+						`, username).toArray();
+						
+						console.log('Settings query result:', settings);
+
+						if (!settings.length) {
+							console.log('No settings found, creating default settings for:', username);
+							// Insert default settings
+							await this.sql.exec(`
+								INSERT INTO user_settings (
+									username,
+									verification_enabled,
+									auto_approve_low_risk
+								) VALUES (?, 1, 0)
+							`, username);
+
+							// Fetch the newly created settings
+							const newSettings = await this.sql.exec(`
+								SELECT 
+									telegram_chat_id,
+									telegram_username,
+									verification_enabled,
+									auto_approve_low_risk,
+									companion_slug,
+									vrm_url
+								FROM user_settings
+								WHERE username = ?
+							`, username).toArray();
+
+							console.log('Newly created settings:', newSettings[0]);
+							
+							return new Response(JSON.stringify(newSettings[0] || {
+								telegram_chat_id: null,
+								telegram_username: null,
+								verification_enabled: 1,
+								auto_approve_low_risk: 0,
+								companion_slug: null,
+								vrm_url: null
+							}), {
+								headers: { 'Content-Type': 'application/json' }
+							});
+						}
+
+						console.log('Sending existing settings:', settings[0]);
+
+						return new Response(JSON.stringify(settings[0]), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+					} catch (error) {
+						console.error('Error fetching user settings:', {
+							username,
+							error: error.message,
+							stack: error.stack
+						});
+						return new Response(JSON.stringify({
+							error: error.message
+						}), { status: 500 });
+					}
+				}
+				
 				case '/create-user': {
 					const { username, inviteCode, github_username, email  } = body;
 					if (!username || !inviteCode) {
@@ -476,7 +671,22 @@ export class UserAuthDO {
 						}), { status: 400 });
 					}
 				}
-
+				case '/migrate-user-settings': {
+					try {
+						const result = await this.migrateUserSettings();
+						return new Response(JSON.stringify(result), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+					} catch (error) {
+						return new Response(JSON.stringify({
+							error: 'Migration failed',
+							details: error.message
+						}), {
+							status: 500,
+							headers: { 'Content-Type': 'application/json' }
+						});
+					}
+				}
 				case '/initiate-key-roll': {
 					const { username, email } = body;
 					try {
@@ -526,6 +736,93 @@ export class UserAuthDO {
 						return new Response(JSON.stringify({
 							error: error.message
 						}), { status: 400 });
+					}
+				}
+
+				case '/update-user-settings': {
+					const { username, settings } = body;
+					console.log('Updating settings for user:', username, 'with settings:', settings);
+
+					if (!username || !settings) {
+						return new Response(JSON.stringify({
+							error: 'Missing required fields'
+						}), { status: 400 });
+					}
+
+					try {
+						// First verify user exists
+						const userExists = await this.sql.exec(
+							"SELECT 1 FROM users WHERE username = ?",
+							username
+						).toArray();
+
+						if (!userExists.length) {
+							return new Response(JSON.stringify({
+								error: 'User not found'
+							}), { status: 404 });
+						}
+
+						// Update or insert settings
+						await this.sql.exec(`
+							INSERT INTO user_settings (
+								username,
+								telegram_chat_id,
+								telegram_username,
+								verification_enabled,
+								auto_approve_low_risk,
+								companion_slug,
+								vrm_url,
+								updated_at
+							) VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+							ON CONFLICT(username) DO UPDATE SET
+								telegram_chat_id = ?,
+								telegram_username = ?,
+								verification_enabled = ?,
+								auto_approve_low_risk = ?,
+								companion_slug = ?,
+								vrm_url = ?,
+								updated_at = unixepoch()
+						`, 
+							username,
+							settings.telegram_chat_id || null,
+							settings.telegram_username || null,
+							settings.verification_enabled ? 1 : 0,
+							settings.auto_approve_low_risk ? 1 : 0,
+							settings.companion_slug || null,
+							settings.vrm_url || null,
+							// Repeat values for UPDATE part
+							settings.telegram_chat_id || null,
+							settings.telegram_username || null,
+							settings.verification_enabled ? 1 : 0,
+							settings.auto_approve_low_risk ? 1 : 0,
+							settings.companion_slug || null,
+							settings.vrm_url || null
+						);
+
+						// Fetch and return updated settings
+						const updatedSettings = await this.sql.exec(`
+							SELECT 
+								telegram_chat_id,
+								telegram_username,
+								verification_enabled,
+								auto_approve_low_risk,
+								companion_slug,
+								vrm_url
+							FROM user_settings
+							WHERE username = ?
+						`, username).one();
+
+						console.log('Updated settings:', updatedSettings);
+
+						return new Response(JSON.stringify(updatedSettings), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+					} catch (error) {
+						console.error('Error updating user settings:', error);
+						return new Response(JSON.stringify({
+							error: 'Failed to update settings',
+							details: error.message
+						}), { status: 500 });
 					}
 				}
 
