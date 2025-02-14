@@ -875,8 +875,9 @@ export class CharacterRegistryDO {
 				profile_img,
 				banner_img,
 				settings,
-				status
-			  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+				status,
+				companion_slug
+			  ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 			  ON CONFLICT(author, name) DO UPDATE SET
 				slug = EXCLUDED.slug,
 				model_provider = EXCLUDED.model_provider,
@@ -886,6 +887,7 @@ export class CharacterRegistryDO {
 				banner_img = EXCLUDED.banner_img,
 				settings = EXCLUDED.settings,
 				status = EXCLUDED.status,
+				companion_slug = EXCLUDED.companion_slug,
 				updated_at = CURRENT_TIMESTAMP
 			  RETURNING *
 			`,
@@ -898,7 +900,8 @@ export class CharacterRegistryDO {
 					cleanedData.profileImg || null,
 					cleanedData.bannerImg || null,
 					JSON.stringify(settingsWithoutSecrets),
-					cleanedData.status || 'private'
+					cleanedData.status || 'private',
+					cleanedData.companion_slug || null
 				).toArray();
 				if (!result.length) {
 					throw new Error('Failed to create/update character record');
@@ -1986,6 +1989,28 @@ export class CharacterRegistryDO {
 				throw new Error('Session initialization failed - no roomId');
 			}
 
+			// Get user info if API key provided
+			let userInfo = null;
+			if (apiKey) {
+				const id = this.env.USER_AUTH.idFromName("global");
+				const auth = this.env.USER_AUTH.get(id);
+
+				// Verify API key for thing
+				const verifyResponse = await auth.fetch(new Request('http://internal/verify-key', {
+					method: 'POST',
+					body: JSON.stringify({ apiKey })
+				}));
+
+				const verifyResult = await verifyResponse.json();
+
+				if (verifyResult.valid) {
+					const username = verifyResult.username;
+					if (username) {
+						userInfo = { userId: username, userName: username };
+					}
+				}
+			}
+
 			// Store user message
 			const userMemoryData = {
 				id: crypto.randomUUID(),
@@ -2210,6 +2235,7 @@ export class CharacterRegistryDO {
 				  vrm_url = ?,
 				  settings = ?,
 				  status = ?,
+				  companion_slug = ?,
 				  updated_at = CURRENT_TIMESTAMP
 				WHERE author = ? AND slug = ?
 				RETURNING *
@@ -2219,6 +2245,7 @@ export class CharacterRegistryDO {
 				character.vrmUrl,
 				JSON.stringify(settingsWithoutSecrets),
 				character.status || 'private',
+				character.companion_slug || null,
 				author,
 				character.slug
 			).toArray();
