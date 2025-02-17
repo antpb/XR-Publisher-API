@@ -718,43 +718,43 @@ export class CharacterRegistryDO {
 
 	async handleMigrateSchema() {
 		try {
-		//   await this.migrateAssetSchema();
-		// log the before schema
-		const beforeSchema = await this.sql.exec('PRAGMA table_info(characters)').toArray();
-		('Before schema:', beforeSchema);
+			// await this.migrateAssetSchema();  // Commented out to prevent accidental table drops
+			// log the before schema
+			const beforeSchema = await this.sql.exec('PRAGMA table_info(characters)').toArray();
+			('Before schema:', beforeSchema);
 
-		  await this.migrateCharacterExtras();
+			await this.migrateCharacterExtras();
 
-		  // log the after schema
-		  const afterSchema = await this.sql.exec('PRAGMA table_info(characters)').toArray();
-		  ('After schema:', afterSchema);
+			// log the after schema
+			const afterSchema = await this.sql.exec('PRAGMA table_info(characters)').toArray();
+			('After schema:', afterSchema);
 
-		  return new Response(JSON.stringify({
-			success: true,
-			message: 'Schema migration completed successfully',
-			details: {
-			  baseSchema: true,
-			  characterSlugs: true,
-			  roomSupport: true,
-			  imageFields: true,
-			  assetSchema: true,
-			  characterExtras: true
-			}
-		  }), {
-			headers: { 'Content-Type': 'application/json' }
-		  });
+			return new Response(JSON.stringify({
+				success: true,
+				message: 'Schema migration completed successfully',
+				details: {
+					baseSchema: true,
+					characterSlugs: true,
+					roomSupport: true,
+					imageFields: true,
+					assetSchema: true,
+					characterExtras: true
+				}
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
 		} catch (error) {
-		  console.error('Migration error:', error);
-		  return new Response(JSON.stringify({
-			success: false,
-			error: 'Migration failed',
-			details: error.message
-		  }), {
-			status: 500,
-			headers: { 'Content-Type': 'application/json' }
-		  });
+			console.error('Migration error:', error);
+			return new Response(JSON.stringify({
+				success: false,
+				error: 'Migration failed',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
 		}
-	  }
+	}
 
 	// Add these helper methods to handle wallet operations
 	async saveCharacterWallets(characterId, wallets) {
@@ -3895,6 +3895,24 @@ export class CharacterRegistryDO {
 						}
 					});
 				}
+				case '/handle-author-asset-chunk-upload': {
+					return await this.handleAuthorAssetChunkUpload(request);
+				}
+				case '/handle-author-asset-upload-complete': {
+					return await this.handleAuthorAssetUploadComplete(request);
+				}
+				case '/get-author-assets': {
+					return await this.handleGetAuthorAssets(request);
+				}
+				case '/delete-author-asset': {
+					return await this.handleDeleteAuthorAsset(request);
+				}
+				case '/update-author-asset-metadata': {
+					return await this.handleUpdateAuthorAssetMetadata(request);
+				}
+				case '/handle-author-asset-thumbnail-upload': {
+					return await this.handleAuthorAssetThumbnailUpload(request);
+				}
 				default:
 					return new Response('Not found', { status: 404 });
 			}
@@ -3960,6 +3978,7 @@ export class CharacterRegistryDO {
 			// Drop existing tables
 			await this.sql.exec('DROP TABLE IF EXISTS character_assets');
 			await this.sql.exec('DROP TABLE IF EXISTS character_asset_chunks');
+			await this.sql.exec('DROP TABLE IF EXISTS author_assets');
 	
 			// Create character_assets table with userId field
 			await this.sql.exec(`
@@ -3983,12 +4002,41 @@ export class CharacterRegistryDO {
 					UNIQUE(user_id, slug, filename)
 				)
 			`);
+
+			// Create author_assets table
+			await this.sql.exec(`
+				CREATE TABLE author_assets (
+					id INTEGER PRIMARY KEY AUTOINCREMENT,
+					user_id TEXT NOT NULL,
+					filename TEXT NOT NULL,
+					original_filename TEXT NOT NULL,
+					filesize INTEGER NOT NULL,
+					file_type TEXT NOT NULL,
+					file_url TEXT NOT NULL,
+					thumb_url TEXT,
+					tags TEXT,
+					categories TEXT,
+					metadata TEXT,
+					background TEXT,
+					status TEXT DEFAULT 'active',
+					created_at INTEGER DEFAULT (unixepoch()),
+					updated_at INTEGER DEFAULT (unixepoch()),
+					UNIQUE(user_id, filename)
+				)
+			`);
 	
-			// Create indexes
+			// Create indexes for character assets
 			await this.sql.exec(`
 				CREATE INDEX idx_assets_user_slug ON character_assets(user_id, slug);
 				CREATE INDEX idx_assets_status ON character_assets(status);
 				CREATE INDEX idx_assets_type ON character_assets(file_type);
+			`);
+
+			// Create indexes for author assets
+			await this.sql.exec(`
+				CREATE INDEX idx_author_assets_user ON author_assets(user_id);
+				CREATE INDEX idx_author_assets_status ON author_assets(status);
+				CREATE INDEX idx_author_assets_type ON author_assets(file_type);
 			`);
 	
 			return true;
@@ -4528,5 +4576,411 @@ Respond with just the topic in a single sentence, no additional commentary.`;
 
 	async handleGeneratePlan(request) {
 		return await this.planGenerator.generatePlan(request);
+	}
+
+
+	async handleAuthorAssetChunkUpload(request) {
+		try {
+			const { fileName, fileData, chunkNumber, totalChunks, uploadId, userId } = await request.json();
+			console.log('Author Asset Upload - File Name:', fileName);
+			console.log('Chunk Number:', chunkNumber);
+			console.log('Total Chunks:', totalChunks);
+			console.log('Upload ID:', uploadId);
+			console.log('User ID:', userId);
+	
+			const sanitizedFileName = fileName.replace(/\s/g, '-').toLowerCase();
+			const chunkKey = `temp/authors/${userId}/chunks_${sanitizedFileName}/${sanitizedFileName}_chunk_${chunkNumber}_${totalChunks}`;
+	
+			// Store chunk in R2 bucket
+			const chunkBuffer = Uint8Array.from(atob(fileData), (c) => c.charCodeAt(0));
+			await this.env.WORLD_BUCKET.put(chunkKey, chunkBuffer, {
+				httpMetadata: {
+					contentType: 'application/octet-stream'
+				}
+			});
+	
+			// Check if all chunks are uploaded by listing the directory
+			const prefix = `temp/authors/${userId}/chunks_${sanitizedFileName}/`;
+			const chunksList = await this.env.WORLD_BUCKET.list({ prefix });
+			const isComplete = chunksList.objects.length === totalChunks;
+	
+			return new Response(JSON.stringify({
+				success: true,
+				isComplete,
+				message: 'Chunk uploaded successfully'
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+	
+		} catch (error) {
+			console.error('Author asset chunk upload error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to upload chunk',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+	
+	async handleAuthorAssetUploadComplete(request) {
+		try {
+			const { 
+				userId,
+				uploadId, 
+				fileName, 
+				fileType,
+				fileSize,
+				tags,
+				thumb,
+				categories,
+				metadata,
+				background 
+			} = await request.json();
+	
+			const sanitizedFileName = fileName.replace(/\s/g, '-').toLowerCase();
+			const prefix = `temp/authors/${userId}/chunks_${sanitizedFileName}/`;
+			
+			// List all chunks from R2
+			const chunksList = await this.env.WORLD_BUCKET.list({ prefix });
+			const sortedChunks = chunksList.objects.sort((a, b) => {
+				const aNum = parseInt(a.key.match(/chunk_(\d+)_/)[1]);
+				const bNum = parseInt(b.key.match(/chunk_(\d+)_/)[1]);
+				return aNum - bNum;
+			});
+	
+			// Combine chunks from R2
+			const fileBuffer = new Uint8Array(fileSize);
+			let offset = 0;
+			
+			for (const chunk of sortedChunks) {
+				const chunkObj = await this.env.WORLD_BUCKET.get(chunk.key);
+				if (!chunkObj) continue;
+				
+				const chunkArrayBuffer = await chunkObj.arrayBuffer();
+				const chunkData = new Uint8Array(chunkArrayBuffer);
+				fileBuffer.set(chunkData, offset);
+				offset += chunkData.byteLength;
+			}
+	
+			// Upload combined file to final location
+			const objectKey = `authors/${userId}/${sanitizedFileName}`;
+			await this.env.WORLD_BUCKET.put(objectKey, fileBuffer, {
+				httpMetadata: {
+					contentType: fileType
+				}
+			});
+	
+			const fileUrl = `${this.env.WORLD_BUCKET_URL}/${objectKey}`;
+
+			// Upload thumbnail
+			const thumbData = Uint8Array.from(atob(thumb.replace(/^data:image\/\w+;base64,/, '')), c => c.charCodeAt(0));
+			const thumbExt = thumb.match(/^data:image\/(\w+);base64,/)[1];
+			const validExts = ['jpeg', 'jpg', 'webp', 'png'];
+			const ext = validExts.includes(thumbExt) ? thumbExt : 'webp';
+			const thumbKey = `authors/${userId}/thumbs/${sanitizedFileName}-thumb.${ext}`;
+			await this.env.WORLD_BUCKET.put(thumbKey, thumbData, {
+				httpMetadata: {
+					contentType: `image/${ext}`
+				}
+			});
+			const thumbUrl = `${this.env.WORLD_BUCKET_URL}/${thumbKey}`;
+
+			// Store asset metadata in SQLite
+			await this.sql.exec(`
+				INSERT INTO author_assets (
+					user_id,
+					filename,
+					original_filename,
+					filesize,
+					file_type,
+					file_url,
+					thumb_url,
+					tags,
+					categories,
+					metadata,
+					background
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+			`, 
+			userId,
+			sanitizedFileName,
+			fileName,
+			fileSize,
+			fileType,
+			fileUrl,
+			thumbUrl,
+			JSON.stringify(tags),
+			JSON.stringify(categories),
+			JSON.stringify(metadata),
+			JSON.stringify(background)
+			);
+
+			// Clean up temp chunks from R2
+			for (const chunk of sortedChunks) {
+				await this.env.WORLD_BUCKET.delete(chunk.key);
+			}
+	
+			return new Response(JSON.stringify({
+				success: true,
+				fileUrl,
+				message: 'Author asset upload completed successfully'
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+	
+		} catch (error) {
+			console.error('Author asset upload completion error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to complete upload',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+	
+	async handleGetAuthorAssets(request) {
+		try {
+			const { userId, searchTerm, categories, limit = 20, offset = 0 } = await request.json();
+	
+			let query = 'SELECT * FROM author_assets WHERE user_id = ?';
+			const params = [userId];
+	
+			if (searchTerm) {
+				query += ' AND (tags LIKE ? OR filename LIKE ? OR original_filename LIKE ?)';
+				const searchPattern = `%${searchTerm}%`;
+				params.push(searchPattern, searchPattern, searchPattern);
+			}
+	
+			if (categories) {
+				const categoryList = JSON.parse(categories);
+				if (categoryList.length > 0) {
+					const categoryPatterns = categoryList.map(cat => {
+						params.push(`%${cat}%`);
+						return 'categories LIKE ?';
+					});
+					query += ` AND (${categoryPatterns.join(' OR ')})`;
+				}
+			}
+	
+			query += ' ORDER BY created_at DESC LIMIT ? OFFSET ?';
+			params.push(limit, offset);
+	
+			const assets = await this.sql.exec(query, ...params).toArray();
+	
+			// Parse JSON fields
+			const parsedAssets = assets.map(asset => ({
+				...asset,
+				tags: JSON.parse(asset.tags || '[]'),
+				categories: JSON.parse(asset.categories || '[]'),
+				metadata: JSON.parse(asset.metadata || '{}'),
+				background: JSON.parse(asset.background || '{}')
+			}));
+	
+			return new Response(JSON.stringify(parsedAssets), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+		} catch (error) {
+			console.error('Get author assets error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to retrieve author assets',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+	
+	async handleDeleteAuthorAsset(request) {
+		try {
+			const { userId, assetId } = await request.json();
+	
+			// Get asset info
+			const asset = await this.sql.exec(`
+				SELECT filename, file_url
+				FROM author_assets
+				WHERE id = ? AND user_id = ?
+			`, assetId, userId).toArray();
+	
+			if (!asset.length) {
+				return new Response(JSON.stringify({
+					error: 'Asset not found'
+				}), {
+					status: 404,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+	
+			// Delete from R2
+			const objectKey = `authors/${userId}/${asset[0].filename}`;
+			await this.env.WORLD_BUCKET.delete(objectKey);
+	
+			// Delete thumbnail if it exists
+			const thumbKey = `authors/${userId}/thumbs/${asset[0].filename}-thumb.webp`;
+			await this.env.WORLD_BUCKET.delete(thumbKey);
+	
+			// Delete from database
+			await this.sql.exec(`
+				DELETE FROM author_assets
+				WHERE id = ? AND user_id = ?
+			`, assetId, userId);
+	
+			return new Response(JSON.stringify({
+				success: true,
+				message: 'Author asset deleted successfully'
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+	
+		} catch (error) {
+			console.error('Delete author asset error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to delete author asset',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+	
+	async handleUpdateAuthorAssetMetadata(request) {
+		try {
+			const { 
+				userId,
+				assetId, 
+				tags, 
+				categories, 
+				metadata,
+				background 
+			} = await request.json();
+	
+			await this.sql.exec(`
+				UPDATE author_assets
+				SET 
+					tags = ?,
+					categories = ?,
+					metadata = ?,
+					background = ?,
+					updated_at = unixepoch()
+				WHERE id = ? AND user_id = ?
+			`, 
+			JSON.stringify(tags),
+			JSON.stringify(categories),
+			JSON.stringify(metadata),
+			JSON.stringify(background),
+			assetId,
+			userId);
+	
+			// Fetch the updated record
+			const result = await this.sql.exec(`
+				SELECT * FROM author_assets
+				WHERE id = ? AND user_id = ?
+			`, assetId, userId).toArray();
+	
+			if (!result.length) {
+				return new Response(JSON.stringify({
+					error: 'Asset not found'
+				}), {
+					status: 404,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+	
+			// Parse JSON fields
+			const updatedAsset = {
+				...result[0],
+				tags: JSON.parse(result[0].tags || '[]'),
+				categories: JSON.parse(result[0].categories || '[]'),
+				metadata: JSON.parse(result[0].metadata || '{}'),
+				background: JSON.parse(result[0].background || '{}')
+			};
+	
+			return new Response(JSON.stringify({
+				success: true,
+				asset: updatedAsset,
+				message: 'Author asset metadata updated successfully'
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+	
+		} catch (error) {
+			console.error('Update author asset metadata error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to update author asset metadata',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
+	}
+	
+	async handleAuthorAssetThumbnailUpload(request) {
+		try {
+			const { userId, assetId, thumb } = await request.json();
+	
+			// Get asset info
+			const asset = await this.sql.exec(`
+				SELECT filename
+				FROM author_assets
+				WHERE id = ? AND user_id = ?
+			`, assetId, userId).toArray();
+	
+			if (!asset.length) {
+				return new Response(JSON.stringify({
+					error: 'Asset not found'
+				}), {
+					status: 404,
+					headers: { 'Content-Type': 'application/json' }
+				});
+			}
+	
+			// Convert base64 to buffer
+			const thumbBuffer = Uint8Array.from(atob(thumb.replace(/^data:image\/\w+;base64,/, '')), c => c.charCodeAt(0));
+			
+			// Generate thumbnail filename and path
+			const thumbFileName = `${asset[0].filename}-thumb.webp`;
+			const thumbKey = `authors/${userId}/thumbs/${thumbFileName}`;
+	
+			// Upload thumbnail to R2
+			await this.env.WORLD_BUCKET.put(thumbKey, thumbBuffer, {
+				httpMetadata: {
+					contentType: 'image/webp'
+				}
+			});
+	
+			const thumbUrl = `${this.env.WORLD_BUCKET_URL}/${thumbKey}`;
+	
+			// Update asset record with thumbnail URL
+			await this.sql.exec(`
+				UPDATE author_assets
+				SET 
+					thumb_url = ?,
+					updated_at = unixepoch()
+				WHERE id = ? AND user_id = ?
+			`, thumbUrl, assetId, userId);
+	
+			return new Response(JSON.stringify({
+				success: true,
+				thumbUrl,
+				message: 'Author asset thumbnail uploaded successfully'
+			}), {
+				headers: { 'Content-Type': 'application/json' }
+			});
+	
+		} catch (error) {
+			console.error('Author asset thumbnail upload error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to upload author asset thumbnail',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { 'Content-Type': 'application/json' }
+			});
+		}
 	}
 }
