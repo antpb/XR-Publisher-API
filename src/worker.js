@@ -3166,6 +3166,7 @@ export default {
 			'/search',
 			'/initiate-key-roll',
 			'/verify-key-roll',
+			'/api/character/',
 			'/api/character/chat-message',
 			'/api/character/message',
 			'/migrate-character-schema',
@@ -3214,6 +3215,65 @@ export default {
 					}
 					case '/get-world': {
 						return await this.handleGetWorld(request, env);
+					}
+					case '/api/character': {
+						try {
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+								});
+							}
+
+							const url = new URL(request.url);
+							const author = url.searchParams.get('author');
+							const slug = url.searchParams.get('slug');
+
+							if (!author || !slug) {
+								return new Response(JSON.stringify({ error: 'Missing author or slug parameter' }), {
+									status: 400,
+									headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+								});
+							}
+
+							const [, apiKey] = authHeader.split(' ');
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, author, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							const response = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author, slug })
+							}));
+
+							if (!response.ok) {
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+								});
+							}
+
+							return new Response(await response.text(), {
+								headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+							});
+						} catch (error) {
+							console.error('Get character error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+							});
+						}
 					}
 					case '/api/character/backup-list': {
 						return await this.handleListBackups(request, env);
@@ -5520,7 +5580,234 @@ export default {
 						}
 						break;
 					}
-					default: {
+					case '/api/author/asset-upload-chunk': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/handle-author-asset-chunk-upload', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+
+					case '/api/author/asset-upload-complete': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/handle-author-asset-upload-complete', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+
+					case '/api/author/assets': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/get-author-assets', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+
+					case '/api/author/delete-asset': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/delete-author-asset', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+
+					case '/api/author/update-asset-metadata': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/update-author-asset-metadata', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+
+					case '/api/author/asset-thumbnail-upload': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/handle-author-asset-thumbnail-upload', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+				default: {
 						return new Response(JSON.stringify({ error: 'Invalid endpoint' }), {
 							status: 404,
 							headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }

@@ -48,6 +48,12 @@ export class UserAuthDO {
 					auto_approve_low_risk INTEGER DEFAULT 0,
 					companion_slug TEXT,
 					vrm_url TEXT,
+					display_name TEXT,
+					status TEXT,
+					profile_img TEXT,
+					banner_img TEXT,
+					extras TEXT DEFAULT '{}',
+					private_extras TEXT DEFAULT '{}',
 					created_at INTEGER DEFAULT (unixepoch()),
 					updated_at INTEGER DEFAULT (unixepoch()),
 					FOREIGN KEY(username) REFERENCES users(username),
@@ -69,7 +75,6 @@ export class UserAuthDO {
 
 	async migrateUserSettings() {
 		try {
-			// Check if columns exist and add if needed
 			const columns = await this.sql.exec("PRAGMA table_info(user_settings)").toArray();
 			
 			if (!columns.some(col => col.name === 'companion_slug')) {
@@ -78,6 +83,30 @@ export class UserAuthDO {
 			
 			if (!columns.some(col => col.name === 'vrm_url')) {
 				await this.sql.exec("ALTER TABLE user_settings ADD COLUMN vrm_url TEXT");
+			}
+
+			if (!columns.some(col => col.name === 'display_name')) {
+				await this.sql.exec("ALTER TABLE user_settings ADD COLUMN display_name TEXT");
+			}
+
+			if (!columns.some(col => col.name === 'status')) {
+				await this.sql.exec("ALTER TABLE user_settings ADD COLUMN status TEXT");
+			}
+
+			if (!columns.some(col => col.name === 'profile_img')) {
+				await this.sql.exec("ALTER TABLE user_settings ADD COLUMN profile_img TEXT");
+			}
+
+			if (!columns.some(col => col.name === 'banner_img')) {
+				await this.sql.exec("ALTER TABLE user_settings ADD COLUMN banner_img TEXT");
+			}
+
+			if (!columns.some(col => col.name === 'extras')) {
+				await this.sql.exec("ALTER TABLE user_settings ADD COLUMN extras TEXT DEFAULT '{}'");
+			}
+
+			if (!columns.some(col => col.name === 'private_extras')) {
+				await this.sql.exec("ALTER TABLE user_settings ADD COLUMN private_extras TEXT DEFAULT '{}'");
 			}
 
 			return { success: true, message: 'User settings migration completed' };
@@ -98,8 +127,14 @@ export class UserAuthDO {
 					auto_approve_low_risk,
 					companion_slug,
 					vrm_url,
+					display_name,
+					status,
+					profile_img,
+					banner_img,
+					extras,
+					private_extras,
 					updated_at
-				) VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+				) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
 				ON CONFLICT(username) DO UPDATE SET
 					telegram_chat_id = ?,
 					telegram_username = ?,
@@ -107,6 +142,12 @@ export class UserAuthDO {
 					auto_approve_low_risk = ?,
 					companion_slug = ?,
 					vrm_url = ?,
+					display_name = ?,
+					status = ?,
+					profile_img = ?,
+					banner_img = ?,
+					extras = ?,
+					private_extras = ?,
 					updated_at = unixepoch()
 			`, 
 			username,
@@ -116,13 +157,25 @@ export class UserAuthDO {
 			settings.auto_approve_low_risk ? 1 : 0,
 			settings.companion_slug,
 			settings.vrm_url,
+			settings.display_name,
+			settings.status,
+			settings.profile_img,
+			settings.banner_img,
+			settings.extras || '{}',
+			settings.private_extras || '{}',
 			// Repeat values for UPDATE part
 			settings.telegram_chat_id,
 			settings.telegram_username,
 			settings.verification_enabled ? 1 : 0,
 			settings.auto_approve_low_risk ? 1 : 0,
 			settings.companion_slug,
-			settings.vrm_url
+			settings.vrm_url,
+			settings.display_name,
+			settings.status,
+			settings.profile_img,
+			settings.banner_img,
+			settings.extras || '{}',
+			settings.private_extras || '{}'
 			);
 
 			return { success: true };
@@ -134,12 +187,70 @@ export class UserAuthDO {
 
 	async getUserSettings(username) {
 		try {
-			return await this.sql.exec(
-				"SELECT * FROM user_settings WHERE username = ?",
+			const settings = await this.sql.exec(`
+				SELECT 
+					id,
+					username,
+					telegram_chat_id,
+					telegram_username,
+					verification_enabled,
+					auto_approve_low_risk,
+					companion_slug,
+					vrm_url,
+					display_name,
+					status,
+					profile_img,
+					banner_img,
+					extras,
+					created_at,
+					updated_at
+				FROM user_settings 
+				WHERE username = ?`,
 				username
 			).one();
+
+			if (settings) {
+				// Parse JSON fields if they exist
+				if (settings.extras) {
+					try {
+						settings.extras = JSON.parse(settings.extras);
+					} catch (e) {
+						settings.extras = {};
+					}
+				}
+			}
+
+			return settings;
 		} catch (error) {
 			console.error('Failed to get user settings:', error);
+			throw error;
+		}
+	}
+
+	async getUserPrivateSettings(username, apiKey) {
+		try {
+			// Verify API key matches the user
+			const keyVerification = await this.verifyApiKey(apiKey);
+			if (!keyVerification.valid || keyVerification.username !== username) {
+				throw new Error('Invalid credentials');
+			}
+
+			const settings = await this.sql.exec(
+				"SELECT private_extras FROM user_settings WHERE username = ?",
+				username
+			).one();
+
+			if (settings?.private_extras) {
+				try {
+					settings.private_extras = JSON.parse(settings.private_extras);
+				} catch (e) {
+					settings.private_extras = {};
+				}
+			}
+
+			return settings?.private_extras || {};
+		} catch (error) {
+			console.error('Failed to get user private settings:', error);
 			throw error;
 		}
 	}
@@ -557,7 +668,12 @@ export class UserAuthDO {
 								verification_enabled,
 								auto_approve_low_risk,
 								companion_slug,
-								vrm_url
+								vrm_url,
+								display_name,
+								status,
+								profile_img,
+								banner_img,
+								extras
 							FROM user_settings
 							WHERE username = ?
 						`, username).toArray();
@@ -571,8 +687,10 @@ export class UserAuthDO {
 								INSERT INTO user_settings (
 									username,
 									verification_enabled,
-									auto_approve_low_risk
-								) VALUES (?, 1, 0)
+									auto_approve_low_risk,
+									extras,
+									private_extras
+								) VALUES (?, 1, 0, '{}', '{}')
 							`, username);
 
 							// Fetch the newly created settings
@@ -583,28 +701,55 @@ export class UserAuthDO {
 									verification_enabled,
 									auto_approve_low_risk,
 									companion_slug,
-									vrm_url
+									vrm_url,
+									display_name,
+									status,
+									profile_img,
+									banner_img,
+									extras
 								FROM user_settings
 								WHERE username = ?
 							`, username).toArray();
 
 							console.log('Newly created settings:', newSettings[0]);
 							
-							return new Response(JSON.stringify(newSettings[0] || {
+							const defaultSettings = newSettings[0] || {
 								telegram_chat_id: null,
 								telegram_username: null,
 								verification_enabled: 1,
 								auto_approve_low_risk: 0,
 								companion_slug: null,
-								vrm_url: null
-							}), {
+								vrm_url: null,
+								display_name: null,
+								status: null,
+								profile_img: null,
+								banner_img: null,
+								extras: '{}'
+							};
+
+							// Parse JSON fields
+							try {
+								defaultSettings.extras = JSON.parse(defaultSettings.extras || '{}');
+							} catch (e) {
+								defaultSettings.extras = {};
+							}
+							
+							return new Response(JSON.stringify(defaultSettings), {
 								headers: { 'Content-Type': 'application/json' }
 							});
 						}
 
-						console.log('Sending existing settings:', settings[0]);
+						// Parse JSON fields for existing settings
+						const settingsWithParsedJson = { ...settings[0] };
+						try {
+							settingsWithParsedJson.extras = JSON.parse(settingsWithParsedJson.extras || '{}');
+						} catch (e) {
+							settingsWithParsedJson.extras = {};
+						}
 
-						return new Response(JSON.stringify(settings[0]), {
+						console.log('Sending existing settings:', settingsWithParsedJson);
+
+						return new Response(JSON.stringify(settingsWithParsedJson), {
 							headers: { 'Content-Type': 'application/json' }
 						});
 					} catch (error) {
@@ -616,6 +761,26 @@ export class UserAuthDO {
 						return new Response(JSON.stringify({
 							error: error.message
 						}), { status: 500 });
+					}
+				}
+				
+				case '/get-user-private-settings': {
+					const { username, apiKey } = body;
+					if (!username || !apiKey) {
+						return new Response(JSON.stringify({
+							error: 'Missing required fields'
+						}), { status: 400 });
+					}
+
+					try {
+						const privateSettings = await this.getUserPrivateSettings(username, apiKey);
+						return new Response(JSON.stringify(privateSettings), {
+							headers: { 'Content-Type': 'application/json' }
+						});
+					} catch (error) {
+						return new Response(JSON.stringify({
+							error: error.message
+						}), { status: 401 });
 					}
 				}
 				
@@ -772,8 +937,14 @@ export class UserAuthDO {
 								auto_approve_low_risk,
 								companion_slug,
 								vrm_url,
+								display_name,
+								status,
+								profile_img,
+								banner_img,
+								extras,
+								private_extras,
 								updated_at
-							) VALUES (?, ?, ?, ?, ?, ?, ?, unixepoch())
+							) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, unixepoch())
 							ON CONFLICT(username) DO UPDATE SET
 								telegram_chat_id = ?,
 								telegram_username = ?,
@@ -781,6 +952,12 @@ export class UserAuthDO {
 								auto_approve_low_risk = ?,
 								companion_slug = ?,
 								vrm_url = ?,
+								display_name = ?,
+								status = ?,
+								profile_img = ?,
+								banner_img = ?,
+								extras = ?,
+								private_extras = ?,
 								updated_at = unixepoch()
 						`, 
 							username,
@@ -790,13 +967,25 @@ export class UserAuthDO {
 							settings.auto_approve_low_risk ? 1 : 0,
 							settings.companion_slug || null,
 							settings.vrm_url || null,
+							settings.display_name || null,
+							settings.status || null,
+							settings.profile_img || null,
+							settings.banner_img || null,
+							JSON.stringify(settings.extras || {}),
+							JSON.stringify(settings.private_extras || {}),
 							// Repeat values for UPDATE part
 							settings.telegram_chat_id || null,
 							settings.telegram_username || null,
 							settings.verification_enabled ? 1 : 0,
 							settings.auto_approve_low_risk ? 1 : 0,
 							settings.companion_slug || null,
-							settings.vrm_url || null
+							settings.vrm_url || null,
+							settings.display_name || null,
+							settings.status || null,
+							settings.profile_img || null,
+							settings.banner_img || null,
+							JSON.stringify(settings.extras || {}),
+							JSON.stringify(settings.private_extras || {})
 						);
 
 						// Fetch and return updated settings
@@ -807,7 +996,13 @@ export class UserAuthDO {
 								verification_enabled,
 								auto_approve_low_risk,
 								companion_slug,
-								vrm_url
+								vrm_url,
+								display_name,
+								status,
+								profile_img,
+								banner_img,
+								extras,
+								private_extras
 							FROM user_settings
 							WHERE username = ?
 						`, username).one();
