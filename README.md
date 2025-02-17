@@ -17,9 +17,37 @@ Before you begin, ensure you have the following:
 The `wrangler.toml` file contains the configuration for your worker and R2 bucket. Key configurations include:
 
 ### KV Namespaces
-- `VISIT_COUNTS`: Tracks world visits
-- `DOWNLOAD_RATELIMIT`: Manages rate limiting
-- `DOWNLOAD_QUEUE`: Handles download queues
+- `CHARACTER_PLANS`: Stores daily activity plans for characters, with keys in format `plan_{characterId}_{YYYY-MM-DD}`
+- `VISIT_COUNTS`: Tracks world visits and analytics
+- `DOWNLOAD_RATELIMIT`: Manages rate limiting for world downloads
+- `DOWNLOAD_QUEUE`: Handles download queues for large world files
+
+Each KV namespace serves a specific purpose:
+
+### CHARACTER_PLANS
+- Stores daily generated plans for each character
+- Keys are time-based and character-specific
+- Used by the planning system to track and execute character activities
+- Automatically cleaned up after plans expire
+- Example key: `plan_123_2024-02-03`
+
+### VISIT_COUNTS
+- Tracks analytics for world visits
+- Helps measure world popularity
+- Used for featured worlds ranking
+- Aggregates visit data over time
+
+### DOWNLOAD_RATELIMIT
+- Prevents abuse of download endpoints
+- Tracks IP-based rate limits
+- Ensures fair usage of bandwidth
+- Configurable limits per time window
+
+### DOWNLOAD_QUEUE
+- Manages asynchronous download requests
+- Handles large world downloads
+- Prevents server overload
+- Provides status tracking for downloads
 
 ### Durable Objects
 - `WORLD_REGISTRY`: Class name (`WorldRegistryDO`)
@@ -80,78 +108,434 @@ The `wrangler.toml` file contains the configuration for your worker and R2 bucke
 - `/api/character/memory`: Create memory for character
 - `/api/character/memories`: Get character memories
 - `/api/character/memories/by-rooms`: Get memories across multiple rooms
+- `/api/character/find-memory`: Search character memories
+- `/api/character/delete-memory`: Delete a specific memory
+- `/api/character/update-memory`: Update an existing memory
 
-## Authentication System
+### Character Activity Planning
 
-### Public Endpoints
-- `/register`: Get registration page HTML
-- `/create-user`: Register new user (requires invite code)
-- `/roll-api-key`: Get API key roll interface
-- `/roll-key-with-token`: Complete key roll with verification token
-- `/initiate-key-roll`: Start key recovery process
-- `/verify-key-roll`: Complete key recovery with GitHub verification
+The system includes a sophisticated planning system that allows characters to generate and execute daily activity plans. Plans are stored in a dedicated KV store named `CHARACTER_PLANS`.
 
-### Authenticated Endpoints
-- `/rotate-key`: Standard API key rotation
-- `/delete-user`: Remove user and associated data (admin only)
-- `/admin-update-user`: Update user details (admin only)
+#### Generate Tweet Prompt
+- Endpoint: `POST /api/character/generate-prompt`
+- Authentication: Required
+- Description: Generates a contextually appropriate tweet prompt based on the character's personality and style
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+- Response:
+  ```json
+  {
+    "topic": "string",
+    "context": "string"
+  }
+  ```
 
-## Authentication Requirements
+#### Generate Daily Plan
+- Endpoint: `POST /api/character/generate-plan`
+- Authentication: Required
+- Description: Creates a daily plan of activities for the character, including social media interactions, world visits, and messaging
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+- Response:
+  ```json
+  {
+    "plan": [
+      {
+        "time": "UTC timestamp in ISO format",
+        "action": "string (one of: tweet, tweet_with_media, like, reply, retweet, telegram_message, telegram_reply, telegram_edit, telegram_pin, discord_message, discord_reply, discord_react, discord_pin, discord_thread, visit_world)",
+        "reason": "string explaining why this action at this time",
+        "status": "string (pending, completed, failed)"
+      }
+    ],
+    "characterId": "string",
+    "characterName": "string",
+    "userId": "string",
+    "generatedAt": "ISO timestamp",
+    "lastChecked": "ISO timestamp"
+  }
+  ```
 
-Most POST endpoints require authentication via API key in the Authorization header:
+#### Get Current Plan
+- Endpoint: `POST /api/character/get-plan`
+- Authentication: Required
+- Description: Retrieves the current day's plan for a character from the KV store
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+- Response: Same format as generate-plan response
 
-```bash
-curl -X POST https://your-worker.dev/endpoint \
-  -H "Authorization: Bearer YOUR_API_KEY" \
-  -H "Content-Type: application/json"
+### Plan Storage and Execution
+
+Plans are stored in Cloudflare KV with the following characteristics:
+- Key format: `plan_{characterId}_{YYYY-MM-DD}`
+- Daily plans are automatically generated and stored
+- Plans include a mix of social media and world interaction activities
+- Each action includes execution status tracking
+- Plans are executed based on UTC timestamps
+- Failed actions are logged with error details
+- Plan execution status is updated in real-time
+
+### Best Practices for Character Plans
+
+1. Generate plans during low-activity periods
+2. Include a mix of different action types
+3. Space activities throughout the day
+4. Consider character's timezone and typical active hours
+5. Monitor plan execution status
+6. Handle failed actions appropriately
+7. Regular cleanup of old plans
+
+## Backup System
+
+The system includes both automatic daily backups and manual checkpoint backups for characters.
+
+### Automatic Daily Backups
+- System automatically creates daily backups at midnight UTC
+- Maintains a 7-day rolling window of backups
+- Stored in character's backup directory: `{userId}/{characterName}/{date}-{uuid}.json`
+- Old backups automatically cleaned up after 7 days
+
+### Manual Checkpoint Backups
+- Users can create manual checkpoint backups at any time
+- No limit on number of checkpoint backups
+- Stored in separate directory: `{userId}/{characterName}/checkpoints/{timestamp}-{uuid}.json`
+- Useful for saving important character states or before making major changes
+
+### Backup Endpoints
+
+#### Create Manual Backup
+- Endpoint: `POST /api/character/create-backup`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string"
+  }
+  ```
+- Response:
+  ```json
+  {
+    "success": true,
+    "message": "Backup created successfully",
+    "timestamp": "ISO-8601 timestamp"
+  }
+  ```
+
+#### List Available Backups
+- Endpoint: `GET /api/character/backup-list`
+- Authentication: Required
+- Query Parameters:
+  - `userId`: Character owner's ID
+  - `characterName`: Character's slug/name
+- Response:
+  ```json
+  {
+    "automatic": [
+      {
+        "key": "string",
+        "date": "YYYY-MM-DD",
+        "type": "automatic",
+        "uploaded": "timestamp"
+      }
+    ],
+    "checkpoints": [
+      {
+        "key": "string",
+        "date": "ISO-8601 timestamp",
+        "type": "checkpoint",
+        "uploaded": "timestamp"
+      }
+    ]
+  }
+  ```
+
+#### Download Backup
+- Endpoint: `GET /api/character/download-backup`
+- Authentication: Required
+- Query Parameters:
+  - `userId`: Character owner's ID
+  - `characterName`: Character's slug/name
+  - `key`: Full backup key path from backup-list
+- Response: JSON file download containing character backup data
+
+#### Delete Backup
+- Endpoint: `POST /api/character/delete-backup`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "userId": "string",
+    "characterName": "string",
+    "key": "string"
+  }
+  ```
+- Response:
+  ```json
+  {
+    "success": true,
+    "message": "Backup deleted successfully"
+  }
+  ```
+
+### Security Features
+- All backups stored in a separate, private R2 bucket
+- Access requires valid API key authentication
+- Filenames include random UUIDs to prevent unauthorized access
+- Cache-Control headers prevent caching of backup data
+- Backups organized by user/character to maintain data isolation
+
+### Best Practices
+1. Create manual checkpoints before:
+   - Making significant character changes
+   - Updating training data or personality
+   - Modifying memory systems
+2. Use descriptive timestamps for manual checkpoints
+3. Monitor backup storage usage
+4. Regularly verify backup integrity
+5. Keep track of important checkpoint dates
+
+## Memory Management System
+
+The system includes a comprehensive memory management system for characters that supports various operations:
+
+### Memory Endpoints
+
+#### Create Memory
+- Endpoint: `POST /api/character/memory`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "sessionId": "string",
+    "content": {
+      "text": "string",
+      "model": "string"
+    },
+    "type": "string",
+    "userId": "string",
+    "userName": "string",
+    "roomId": "string",
+    "agentId": "string",
+    "isUnique": boolean,
+    "importance_score": number
+  }
+  ```
+- Response: 
+  ```json
+  {
+    "success": true,
+    "memory": {
+      "id": "string",
+      "type": "string",
+      "content": {
+        "text": "string",
+        "model": "string"
+      },
+      "createdAt": number
+    }
+  }
+  ```
+
+#### Find Memories
+- Endpoint: `POST /api/character/find-memory`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "sessionId": "string",
+    "query": "string",
+    "agentId": "string"
+  }
+  ```
+- Response: 
+  ```json
+  {
+    "memories": [
+      {
+        "id": "string",
+        "type": "string",
+        "content": {
+          "text": "string",
+          "model": "string"
+        },
+        "createdAt": number,
+        "importance_score": number
+      }
+    ]
+  }
+  ```
+
+#### List Memories
+- Endpoint: `POST /api/character/memories`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "slug": "string",
+    "sessionId": "string",
+    "type": "string"
+  }
+  ```
+- Response: Array of memory objects
+
+#### Delete Memory
+- Endpoint: `POST /api/character/delete-memory`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "sessionId": "string",
+    "memoryId": "string"
+  }
+  ```
+- Response:
+  ```json
+  {
+    "success": true
+  }
+  ```
+
+#### Update Memory
+- Endpoint: `POST /api/character/update-memory`
+- Authentication: Required
+- Request Body:
+  ```json
+  {
+    "sessionId": "string",
+    "memoryId": "string",
+    "content": {
+      "text": "string",
+      "model": "string"
+    },
+    "type": "string",
+    "importance_score": number
+  }
+  ```
+- Response:
+  ```json
+  {
+    "success": true,
+    "memory": {
+      "id": "string",
+      "type": "string",
+      "content": {
+        "text": "string",
+        "model": "string"
+      },
+      "importance_score": number,
+      "updatedAt": number
+    }
+  }
+  ```
+
+### Memory Schema
+```sql
+CREATE TABLE memories (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL,
+    content TEXT NOT NULL,
+    userId TEXT,
+    userName TEXT,
+    roomId TEXT,
+    agentId TEXT NOT NULL,
+    isUnique INTEGER DEFAULT 0,
+    createdAt INTEGER NOT NULL,
+    importance_score REAL DEFAULT 0,
+    access_count INTEGER DEFAULT 0,
+    last_accessed INTEGER,
+    metadata TEXT,
+    FOREIGN KEY(agentId) REFERENCES characters(slug)
+);
 ```
 
-Admin-only endpoints require the main API secret:
-```bash
-curl -X POST https://your-worker.dev/admin-update-user \
-  -H "Authorization: Bearer YOUR_API_SECRET" \
-  -H "Content-Type: 'application/json"
-```
+### Memory Types
+The system supports various memory types:
+- `message`: Standard conversation messages
+- `reflection`: Character's internal thoughts/reflections
+- `fact`: Important facts about users or context
+- `summary`: Conversation summaries
+- `custom`: User-defined memory types
 
-## User Management
+### Memory Security
+The memory system implements several security measures:
+1. API key authentication for all endpoints
+2. Character ownership verification
+3. User-specific memory access control
+4. Public vs private memory separation
+5. Secure memory deletion with ownership checks
 
-The Plugin Publishing System includes a robust user management system with secure registration, API key management, and GitHub-based verification.
+### Memory Search Features
+The search functionality includes:
+1. Full-text search within memory content
+2. Case-insensitive matching
+3. Character-specific scoping
+4. User-specific filtering
+5. Type-based filtering
+6. Importance score consideration
+7. Room-based context filtering
 
-### Registration
+### Best Practices for Memory Management
+1. Regularly clean up old or unused memories
+2. Use appropriate memory types for different content
+3. Set reasonable importance scores
+4. Implement proper error handling
+5. Monitor memory usage and performance
+6. Regular backups of critical memories
+7. Proper security checks before operations
 
-New users can register through the `/register` endpoint which provides a web interface for:
-- Creating a new author account
-- Setting up GitHub integration
-- Generating initial API credentials
-- Requiring invite codes for controlled access
+### Extended Character Fields
+The character system includes several specialized fields for enhanced functionality:
 
-Registation workflow:
-1. User visits the registration page
-2. Provides username, email, GitHub username, and invite code
-3. System validates credentials and invite code
-4. Generates initial API key
-5. Downloads configuration file with credentials
+#### Companion System
+- `companion_slug`: Links characters together, enabling companion relationships and interactions
+- Useful for creating character networks and relationships
+- Enables cross-character memory sharing and interactions
 
+#### Equipment System
+- `equipped_inventory`: JSON array storing currently equipped items
+- Supports virtual item management
+- Can affect character behavior and capabilities
+- Stored as stringified JSON for flexibility
 
-## Character System Features
+#### Approval and Moderation
+- `approval_channel`: Configures where moderation requests are sent
+- Enables content filtering and approval workflows
+- Can be used for multi-stage content review
 
-### Character Configuration
-Characters support rich configuration including:
-- Basic info (name, bio, status)
-- Model provider selection (OpenAI/Anthropic)
-- Communication channels (Discord, Direct)
-- Personality traits and topics
-- Message examples
-- Style settings
-- Custom API keys per character
+#### Character State
+- `mood`: Tracks character's current emotional state
+- Defaults to "normal"
+- Influences character responses and behavior
+- Can be updated based on interactions
 
-### Memory System
-Characters maintain:
-- Conversation history
-- User-specific memories
-- Room-based context
-- Memory importance scoring
-- Cross-room memory retrieval
+#### Stats and Metrics
+- `stats`: JSON object storing character statistics
+- Can track interaction metrics, preferences, and other numerical data
+- Useful for character development and progression
+- Stored as stringified JSON for flexibility
+
+#### Extended Data Storage
+- `extras`: Public additional data storage
+- `private_extras`: Protected additional data storage
+- Both stored as JSON objects
+- `extras` is always returned to clients
+- `private_extras` is only accessible server-side
+- Useful for storing character-specific configuration and data
 
 ### Session Management
 - Secure session initialization
@@ -191,6 +575,13 @@ CREATE TABLE characters (
     profile_img TEXT,
     banner_img TEXT,
     status TEXT DEFAULT 'private',
+    companion_slug TEXT,
+    equipped_inventory TEXT DEFAULT '[]',
+    approval_channel TEXT,
+    mood TEXT DEFAULT 'normal',
+    stats TEXT DEFAULT '{}',
+    extras TEXT DEFAULT '{}',
+    private_extras TEXT DEFAULT '{}',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(author, name)
