@@ -2236,6 +2236,7 @@ export class CharacterRegistryDO {
 				  settings = ?,
 				  status = ?,
 				  companion_slug = ?,
+				  equipped_inventory = ?,
 				  updated_at = CURRENT_TIMESTAMP
 				WHERE author = ? AND slug = ?
 				RETURNING *
@@ -2246,6 +2247,7 @@ export class CharacterRegistryDO {
 				JSON.stringify(settingsWithoutSecrets),
 				character.status || 'private',
 				character.companion_slug || null,
+				JSON.stringify(character.equipped_inventory || []),
 				author,
 				character.slug
 			).toArray();

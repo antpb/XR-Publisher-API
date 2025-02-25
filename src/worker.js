@@ -3089,6 +3089,28 @@ export default {
 		}
 	},
 
+	async getFeaturedAuthors(env) {
+		try {
+		  // Get the DO instance for user auth
+		  const id = env.USER_AUTH.idFromName("global");
+		  const auth = env.USER_AUTH.get(id);
+	  
+		  // Create a request to the DO to get the data
+		  const response = await auth.fetch(new Request('http://internal/get-featured-authors', {
+			method: 'GET'
+		  }));
+	  
+		  if (!response.ok) {
+			throw new Error(`Failed to fetch featured authors: ${response.status}`);
+		  }
+	  
+		  return await response.json();
+		} catch (error) {
+		  console.error("Error fetching featured authors:", error);
+		  throw error;
+		}
+	  },	  
+
 	async fetch(request, env) {
 		const url = new URL(request.url);
 		const path = url.pathname;
@@ -3407,6 +3429,38 @@ export default {
 						const bot = getDiscordBot(env);
 
 						return bot.fetch(request);
+					}
+					case '/featured-authors': {
+						if (request.method === "GET") {
+							try {
+								const authors = await this.getFeaturedAuthors(env);
+								return new Response(JSON.stringify(authors), {
+									headers: {
+										'Content-Type': 'application/json',
+										'Access-Control-Allow-Origin': '*',
+										'Access-Control-Allow-Methods': 'GET',
+										'Access-Control-Allow-Headers': 'Content-Type'
+									}
+								});
+							} catch (error) {
+								return new Response(JSON.stringify({
+									error: 'Failed to fetch featured authors',
+									details: error.message
+								}), {
+									status: 500,
+									headers: {
+										'Content-Type': 'application/json',
+										'Access-Control-Allow-Origin': '*'
+									}
+								});
+							}
+						}
+						return new Response('Method not allowed', { 
+							status: 405,
+							headers: {
+								'Access-Control-Allow-Origin': '*'
+							}
+						});
 					}
 					default: {
 						// Handle directory and author paths that need path parameter extraction
@@ -5831,5 +5885,6 @@ export default {
 		});
 	}
 }
+
 
 
