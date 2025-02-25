@@ -22,9 +22,9 @@ export { UserAuthDO, WorldRegistryDO, CharacterRegistryDO, DiscordBotDO };
 // Define CORS
 const CORS_HEADERS = {
 	'Access-Control-Allow-Origin': '*',
-	'Access-Control-Allow-Methods': 'GET, HEAD, POST, OPTIONS',
-	'Access-Control-Allow-Headers': 'Content-Type, Authorization, X-Discord-Application-Id, cf-discord-token',
-	'Access-Control-Max-Age': '86400',
+	'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+	'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+	'Access-Control-Max-Age': '86400'
 };
 
 function corsHeaders() {
@@ -56,6 +56,7 @@ export default {
 			const result = await response.json();
 			const responseData = {
 				username: result.username,
+				id: result.id,
 				success: result.valid
 			}
 			return responseData;
@@ -99,33 +100,30 @@ export default {
 	handleOptions(request) {
 		return new Response(null, {
 			status: 204,
-			headers: {
-				// ...CORS_HEADERS,
-				'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-				'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-			},
+			headers: CORS_HEADERS
 		});
 	},
 
-	// Authenticate the request using the stored secret
 	async authenticateRequest(request, env) {
 		const authHeader = request.headers.get('Authorization');
 		if (!authHeader) {
-			return false;
+			return { success: false, username: null };
 		}
 		const [authType, authToken] = authHeader.split(' ');
 		if (authType !== 'Bearer') {
-			return false;
+			return { success: false, username: null };
 		}
 
 		// Check if it's the admin API_SECRET
 		if (authToken === env.API_SECRET) {
-			return true;
+			return { success: true, username: 'admin' };
 		}
 
+		// Extract username from API key format username.keyId
+		const [username] = authToken.split('.');
 		// If not admin key, verify against user API keys
-		const authResult = await this.verifyApiKey(authToken, env);
-		return authResult.success;
+		const { success, username: verifiedUsername, id } = await this.verifyApiKey(authToken, env);
+		return { success, username: verifiedUsername, id };
 	},
 
 	// Handle Create User
@@ -172,64 +170,204 @@ export default {
 
 	async scheduled(controller, env, ctx) {
 		try {
-			if (!env.VISIT_COUNTS || !env.WORLD_REGISTRY) {
-				console.error('Missing required KV namespaces');
-				return;
-			}
-
-			let visits = new Map();
-			let cursor = undefined;
-
-			// Process visit queues from KV storage
-			do {
-				const result = await env.VISIT_COUNTS.list({
-					cursor,
-					prefix: 'queue:'
-				});
-
-				if (!result) break;
-				cursor = result.cursor;
-
-				for (const key of result.keys || []) {
-					if (!key?.name) continue;
-
-					const parts = key.name.split(':');
-					if (parts.length < 4) continue;
-
-					const author = parts[2];
-					const slug = parts[3];
-					const worldKey = `${author}:${slug}`;
-
-					visits.set(
-						worldKey,
-						(visits.get(worldKey) || 0) + 1
-					);
-
-					// Delete the processed key
-					await env.VISIT_COUNTS.delete(key.name)
-						.catch(err => console.error(`Error deleting key ${key.name}:`, err));
-				}
-			} while (cursor);
-
-			// Update DO if we have changes
-			if (visits.size > 0) {
-				const id = env.WORLD_REGISTRY.idFromName("global");
-				const registry = env.WORLD_REGISTRY.get(id);
-
-				await registry.fetch(new Request('http://internal/update-visit-counts', {
-					method: 'POST',
-					body: JSON.stringify({
-						visits: Array.from(visits)
-					})
-				}));
-			}
-
-		} catch (error) {
-			console.error('Queue processing error:', error);
-			console.error('Environment state:', {
-				hasVisitCounts: !!env?.VISIT_COUNTS,
-				hasWorldRegistry: !!env?.WORLD_REGISTRY
+			console.log('Cron triggered:', {
+				pattern: controller.cron,
+				scheduledTime: new Date().toISOString(),
+				hasCharacterRegistry: !!env.CHARACTER_REGISTRY,
+				hasBackupBucket: !!env.CHARACTER_BACKUPS
 			});
+
+			// Forward the cron event to CharacterRegistryDO
+			const id = env.CHARACTER_REGISTRY.idFromName("global");
+			const registry = env.CHARACTER_REGISTRY.get(id);
+			const response = await registry.fetch(new Request('http://internal/scheduled', {
+				method: 'POST',
+				body: JSON.stringify({ cron: controller.cron })
+			}));
+			
+			if (!response.ok) {
+				throw new Error(`CharacterRegistryDO scheduled task failed: ${await response.text()}`);
+			}
+			console.log('CharacterRegistryDO scheduled task completed');
+
+			// Handle backups if needed
+			if (controller.cron === "25 23 * * *") {
+				console.log('Starting daily character backup at 23:25 UTC');
+				if (!env.CHARACTER_REGISTRY || !env.CHARACTER_BACKUPS) {
+					console.error('Missing required bindings for character backup:', {
+						hasRegistry: !!env.CHARACTER_REGISTRY,
+						hasBackupBucket: !!env.CHARACTER_BACKUPS
+					});
+					return;
+				}
+
+				await this.handleDailyCharacterBackups(env);
+				console.log('Completed daily character backup');
+			} else {
+				// Updated log message to be more generic
+				console.log(`Skipping backup - cron pattern "${controller.cron}" is not for backup task`);
+			}
+		} catch (error) {
+			console.error('Scheduled task error:', {
+				message: error.message,
+				stack: error.stack,
+				time: new Date().toISOString()
+			});
+		}
+	},
+
+	async processVisitQueues(env) {
+		let visits = new Map();
+		let cursor = undefined;
+
+		do {
+			const result = await env.VISIT_COUNTS.list({
+				cursor,
+				prefix: 'queue:'
+			});
+
+			if (!result) break;
+			cursor = result.cursor;
+
+			for (const key of result.keys || []) {
+				if (!key?.name) continue;
+
+				const parts = key.name.split(':');
+				if (parts.length < 4) continue;
+
+				const author = parts[2];
+				const slug = parts[3];
+				const worldKey = `${author}:${slug}`;
+
+				visits.set(
+					worldKey,
+					(visits.get(worldKey) || 0) + 1
+				);
+
+				await env.VISIT_COUNTS.delete(key.name)
+					.catch(err => console.error(`Error deleting key ${key.name}:`, err));
+			}
+		} while (cursor);
+
+		if (visits.size > 0) {
+			const id = env.WORLD_REGISTRY.idFromName("global");
+			const registry = env.WORLD_REGISTRY.get(id);
+
+			await registry.fetch(new Request('http://internal/update-visit-counts', {
+				method: 'POST',
+				body: JSON.stringify({
+					visits: Array.from(visits)
+				})
+			}));
+		}
+	},
+
+	async handleDailyCharacterBackups(env) {
+		try {
+			console.log('Starting handleDailyCharacterBackups');
+
+			// Get registry instance
+			const id = env.CHARACTER_REGISTRY.idFromName("global");
+			const registry = env.CHARACTER_REGISTRY.get(id);
+
+			// List all authors
+			console.log('Listing authors from WORLD_BUCKET');
+			const authorsList = await env.WORLD_BUCKET.list();
+			const authors = new Set();
+			for (const item of authorsList.objects) {
+				const parts = item.key.split('/');
+				if (parts.length > 1) {
+					authors.add(parts[0]);
+				}
+			}
+			console.log(`Found ${authors.size} authors to process`);
+
+			const currentDate = new Date().toISOString().split('T')[0];
+			const oneWeekAgo = new Date();
+			oneWeekAgo.setDate(oneWeekAgo.getDate() - 7);
+			const cutoffDate = oneWeekAgo.toISOString().split('T')[0];
+
+			// Process each author
+			for (const author of authors) {
+				console.log(`Processing author: ${author}`);
+
+				// Get all characters for this author
+				const response = await registry.fetch(new Request('http://internal/get-author-characters', {
+					method: 'POST',
+					body: JSON.stringify({ author })
+				}));
+
+				if (!response.ok) {
+					console.error(`Failed to get characters for author ${author}:`, await response.text());
+					continue;
+				}
+
+				const characters = await response.json();
+				console.log(`Found ${characters.length} characters for author ${author}`);
+
+				// Export and backup each character
+				for (const character of characters) {
+					try {
+						console.log(`Processing character: ${character.slug}`);
+
+						// Export character data
+						const exportResponse = await registry.fetch(new Request('http://internal/export-character', {
+							method: 'POST',
+							body: JSON.stringify({
+								userId: author,
+								characterName: character.slug
+							})
+						}));
+
+						if (!exportResponse.ok) {
+							console.error(`Failed to export character ${character.slug}:`, await exportResponse.text());
+							continue;
+						}
+
+						const exportData = await exportResponse.json();
+						console.log(`Successfully exported character ${character.slug}`);
+
+						// Store in backup bucket with date and encrypted filename
+						const backupKey = `${author}/${character.slug}/automatic/${currentDate}-${crypto.randomUUID()}.json`;
+						await env.CHARACTER_BACKUPS.put(backupKey, JSON.stringify(exportData), {
+							httpMetadata: {
+								contentType: 'application/json',
+								cacheControl: 'private, no-cache'
+							}
+						});
+						console.log(`Created backup at key: ${backupKey}`);
+
+						// Clean up old backups for this character
+						const oldBackups = await env.CHARACTER_BACKUPS.list({
+							prefix: `${author}/${character.slug}/automatic/`
+						});
+
+						let deletedCount = 0;
+						for (const backup of oldBackups.objects) {
+							const backupDate = backup.key.split('/')[2].split('-')[0]; // Extract date from key
+							if (backupDate < cutoffDate) {
+								await env.CHARACTER_BACKUPS.delete(backup.key);
+								deletedCount++;
+							}
+						}
+						console.log(`Cleaned up ${deletedCount} old backups for ${character.slug}`);
+					} catch (error) {
+						console.error(`Error backing up character ${character.slug}:`, {
+							message: error.message,
+							stack: error.stack
+						});
+						continue;
+					}
+				}
+			}
+			console.log('Completed all character backups successfully');
+		} catch (error) {
+			console.error('Character backup error:', {
+				message: error.message,
+				stack: error.stack,
+				time: new Date().toISOString()
+			});
+			throw error; // Re-throw to be caught by the scheduled handler
 		}
 	},
 
@@ -2377,7 +2515,7 @@ export default {
 				});
 			}
 			const [, apiKey] = authHeader.split(' ');
-			
+
 			// get the user from the api key
 			const authResult = await this.verifyApiKey(apiKey, env);
 			console.log('[handleDeleteMemory] Auth result:', authResult);
@@ -2390,8 +2528,8 @@ export default {
 				});
 			}
 
-			const { sessionId, memoryId } = await request.json();
-			
+			const { sessionId, memoryId, characterId } = await request.json();
+
 			if (!sessionId || !memoryId) {
 				return new Response(JSON.stringify({
 					error: 'Missing required fields'
@@ -2400,19 +2538,20 @@ export default {
 					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
 				});
 			}
-		
+
 			const id = env.CHARACTER_REGISTRY.idFromName("global");
 			const registry = env.CHARACTER_REGISTRY.get(id);
-		
+
 			const response = await registry.fetch(new Request('http://internal/handle-delete-memory', {
 				method: 'POST',
-				body: JSON.stringify({ 
-					sessionId, 
+				body: JSON.stringify({
+					sessionId,
 					memoryId,
+					characterId,
 					username: authResult.username
 				})
 			}));
-		
+
 			return new Response(await response.text(), {
 				status: response.status,
 				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
@@ -2431,8 +2570,8 @@ export default {
 	async handleFindMemory(request, env) {
 		try {
 			const { sessionId, query, agentId } = await request.json();
-			
-			if (!sessionId || !query ) {
+
+			if (!sessionId || !query) {
 				return new Response(JSON.stringify({
 					error: 'Missing required fields'
 				}), {
@@ -2462,20 +2601,20 @@ export default {
 					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
 				});
 			}
-	
+
 			const id = env.CHARACTER_REGISTRY.idFromName("global");
 			const registry = env.CHARACTER_REGISTRY.get(id);
-	
+
 			const response = await registry.fetch(new Request('http://internal/handle-find-memory', {
 				method: 'POST',
-				body: JSON.stringify({ 
-					sessionId, 
+				body: JSON.stringify({
+					sessionId,
 					query,
-					agentId, 
-					username: authResult.username 
+					agentId,
+					username: authResult.username
 				})
 			}));
-	
+
 			return new Response(await response.text(), {
 				status: response.status,
 				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
@@ -2504,7 +2643,7 @@ export default {
 				});
 			}
 			const [, apiKey] = authHeader.split(' ');
-			
+
 			// get the user from the api key
 			const authResult = await this.verifyApiKey(apiKey, env);
 			console.log('[handleUpdateMemory] Auth result:', authResult);
@@ -2518,9 +2657,9 @@ export default {
 			}
 
 			const { sessionId, memoryId, content, type, userId, importance_score = 0, metadata = {} } = await request.json();
-			console.log('[handleUpdateMemory] Request params:', { 
-				sessionId, 
-				memoryId, 
+			console.log('[handleUpdateMemory] Request params:', {
+				sessionId,
+				memoryId,
 				type,
 				userId,
 				importance_score,
@@ -2532,19 +2671,19 @@ export default {
 
 			const response = await registry.fetch(new Request('http://internal/handle-update-memory', {
 				method: 'POST',
-				body: JSON.stringify({ 
-					sessionId, 
-					memoryId, 
+				body: JSON.stringify({
+					sessionId,
+					memoryId,
 					content,
 					importance_score,
-					type, 
+					type,
 					userId,
 					username: authResult.username // Pass authenticated username
 				})
 			}));
 
 			const responseText = await response.text();
-			console.log('[handleUpdateMemory] DO Response:', { 
+			console.log('[handleUpdateMemory] DO Response:', {
 				status: response.status,
 				body: responseText.slice(0, 200) + '...'
 			});
@@ -2567,7 +2706,7 @@ export default {
 	async handleMemoryList(request, env) {
 		try {
 			let sessionId, type, slug;
-			
+
 			// get api key from header
 			const authHeader = request.headers.get('Authorization');
 			if (!authHeader) {
@@ -2579,7 +2718,7 @@ export default {
 				});
 			}
 			const [, apiKey] = authHeader.split(' ');
-			
+
 			// get the user from the api key
 			const authResult = await this.verifyApiKey(apiKey, env);
 			console.log('[handleMemoryList] Auth result:', authResult);
@@ -2591,7 +2730,7 @@ export default {
 					headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
 				});
 			}
-			
+
 			if (request.method === 'GET') {
 				const url = new URL(request.url);
 				sessionId = url.searchParams.get('sessionId');
@@ -2624,24 +2763,24 @@ export default {
 
 			const id = env.CHARACTER_REGISTRY.idFromName("global");
 			const registry = env.CHARACTER_REGISTRY.get(id);
-	
+
 			const response = await registry.fetch(new Request('http://internal/handle-memory-list', {
 				method: 'POST',
-				body: JSON.stringify({ 
-					slug, 
-					sessionId, 
+				body: JSON.stringify({
+					slug,
+					sessionId,
 					type,
 					username: authResult.username // Pass authenticated username
 				})
 			}));
 
 			const responseText = await response.text();
-			console.log('[handleMemoryList] Response:', { 
+			console.log('[handleMemoryList] Response:', {
 				status: response.status,
 				headers: Object.fromEntries(response.headers),
 				body: responseText.slice(0, 200) + '...'
 			});
-	
+
 			return new Response(responseText, {
 				headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
 			});
@@ -2660,6 +2799,318 @@ export default {
 			});
 		}
 	},
+	async handleCreateBackup(request, env) {
+		try {
+			const { userId, characterName } = await request.json();
+
+			// Auth check
+			const authHeader = request.headers.get('Authorization');
+			if (!authHeader) {
+				return new Response(JSON.stringify({
+					error: 'Missing Authorization header'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+			const [, apiKey] = authHeader.split(' ');
+
+			// Verify API key and username match
+			const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+			if (!isValid) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized: Invalid API key or username mismatch'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			// Get character data and create backup
+			const id = env.CHARACTER_REGISTRY.idFromName("global");
+			const registry = env.CHARACTER_REGISTRY.get(id);
+
+			// Export character data
+			const exportResponse = await registry.fetch(new Request('http://internal/export-character', {
+				method: 'POST',
+				body: JSON.stringify({
+					userId,
+					characterName
+				})
+			}));
+
+			if (!exportResponse.ok) {
+				throw new Error('Failed to export character data');
+			}
+
+			const exportData = await exportResponse.json();
+			const timestamp = new Date().toISOString();
+			const backupKey = `${userId}/${characterName}/checkpoints/${timestamp}-${crypto.randomUUID()}.json`;
+
+			// Store in backup bucket
+			await env.CHARACTER_BACKUPS.put(backupKey, JSON.stringify(exportData), {
+				httpMetadata: {
+					contentType: 'application/json',
+					cacheControl: 'private, no-cache'
+				}
+			});
+
+			return new Response(JSON.stringify({
+				success: true,
+				message: 'Backup created successfully',
+				timestamp
+			}), {
+				status: 200,
+				headers: { ...CORS_HEADERS }
+			});
+
+		} catch (error) {
+			console.error('Create backup error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to create backup',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	},
+
+	async handleListBackups(request, env) {
+		try {
+			const url = new URL(request.url);
+			const userId = url.searchParams.get('userId');
+			const characterName = url.searchParams.get('characterName');
+
+			if (!userId || !characterName) {
+				return new Response(JSON.stringify({
+					error: 'Missing required parameters'
+				}), {
+					status: 400,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			// Auth check
+			const authHeader = request.headers.get('Authorization');
+			if (!authHeader) {
+				return new Response(JSON.stringify({
+					error: 'Missing Authorization header'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+			const [, apiKey] = authHeader.split(' ');
+
+			// Verify API key and username match
+			const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+			if (!isValid) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized: Invalid API key or username mismatch'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			// Get automatic backups
+			const autoBackups = await env.CHARACTER_BACKUPS.list({
+				prefix: `${userId}/${characterName}/automatic/`
+			});
+
+			// Get checkpoint backups
+			const checkpointBackups = await env.CHARACTER_BACKUPS.list({
+				prefix: `${userId}/${characterName}/checkpoints/`
+			});
+
+			// Format backup data
+			const backups = {
+				automatic: autoBackups.objects.map(obj => ({
+					key: obj.key,
+					date: obj.key.split('/automatic/')[1].split('-')[0],
+					type: 'automatic',
+					uploaded: obj.uploaded
+				})),
+				checkpoints: checkpointBackups.objects.map(obj => ({
+					key: obj.key,
+					date: obj.key.split('/checkpoints/')[1].split('-')[0],
+					type: 'checkpoint',
+					uploaded: obj.uploaded
+				}))
+			};
+
+			return new Response(JSON.stringify(backups), {
+				status: 200,
+				headers: { ...CORS_HEADERS }
+			});
+
+		} catch (error) {
+			console.error('List backups error:', error);
+			return new Response(JSON.stringify({
+				error: 'Failed to list backups',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	},
+	async handleDownloadBackup(request, env) {
+		try {
+			const url = new URL(request.url);
+			const userId = url.searchParams.get('userId');
+			const characterName = url.searchParams.get('characterName');
+			const key = url.searchParams.get('key');
+
+			if (!userId || !characterName || !key) {
+				return new Response(JSON.stringify({
+					error: 'Missing required parameters'
+				}), {
+					status: 400,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			const authHeader = request.headers.get('Authorization');
+			if (!authHeader) {
+				return new Response(JSON.stringify({
+					error: 'Missing Authorization header'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			const [, apiKey] = authHeader.split(' ');
+			const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+			if (!isValid) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized: Invalid API key or username mismatch'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			const backup = await env.CHARACTER_BACKUPS.get(key);
+			if (!backup) {
+				return new Response(JSON.stringify({
+					error: 'Backup not found'
+				}), {
+					status: 404,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			const headers = new Headers();
+			headers.set('Content-Type', 'application/json');
+			headers.set('Content-Disposition', `attachment; filename="${characterName}-backup.json"`);
+			Object.entries(CORS_HEADERS).forEach(([key, value]) => headers.set(key, value));
+
+			// Return the raw backup data directly
+			return new Response(backup, { headers });
+		} catch (error) {
+			console.error('Error downloading backup:', error);
+			return new Response(JSON.stringify({
+				error: 'Internal server error',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	},
+
+	async handleDeleteBackup(request, env) {
+		try {
+			const { userId, characterName, key } = await request.json();
+
+			if (!userId || !characterName || !key) {
+				return new Response(JSON.stringify({
+					error: 'Missing required parameters'
+				}), {
+					status: 400,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			const authHeader = request.headers.get('Authorization');
+			if (!authHeader) {
+				return new Response(JSON.stringify({
+					error: 'Missing Authorization header'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			const [, apiKey] = authHeader.split(' ');
+			const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+			if (!isValid) {
+				return new Response(JSON.stringify({
+					error: 'Unauthorized: Invalid API key or username mismatch'
+				}), {
+					status: 401,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			// Check if backup exists before attempting to delete
+			const exists = await env.CHARACTER_BACKUPS.head(key);
+			if (!exists) {
+				return new Response(JSON.stringify({
+					error: 'Backup not found'
+				}), {
+					status: 404,
+					headers: { ...CORS_HEADERS }
+				});
+			}
+
+			// Delete the backup
+			await env.CHARACTER_BACKUPS.delete(key);
+
+			return new Response(JSON.stringify({
+				success: true,
+				message: 'Backup deleted successfully'
+			}), {
+				status: 200,
+				headers: { ...CORS_HEADERS }
+			});
+		} catch (error) {
+			console.error('Error deleting backup:', error);
+			return new Response(JSON.stringify({
+				error: 'Internal server error',
+				details: error.message
+			}), {
+				status: 500,
+				headers: { ...CORS_HEADERS }
+			});
+		}
+	},
+
+	async getFeaturedAuthors(env) {
+		try {
+		  // Get the DO instance for user auth
+		  const id = env.USER_AUTH.idFromName("global");
+		  const auth = env.USER_AUTH.get(id);
+	  
+		  // Create a request to the DO to get the data
+		  const response = await auth.fetch(new Request('http://internal/get-featured-authors', {
+			method: 'GET'
+		  }));
+	  
+		  if (!response.ok) {
+			throw new Error(`Failed to fetch featured authors: ${response.status}`);
+		  }
+	  
+		  return await response.json();
+		} catch (error) {
+		  console.error("Error fetching featured authors:", error);
+		  throw error;
+		}
+	  },	  
+
 	async fetch(request, env) {
 		const url = new URL(request.url);
 		const path = url.pathname;
@@ -2668,13 +3119,16 @@ export default {
 		if (request.method === 'OPTIONS') {
 			return new Response(null, {
 				status: 204,
-				headers: {
-					...CORS_HEADERS,
-					'Access-Control-Allow-Headers': 'Content-Type, Authorization',
-					'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
-				},
+				headers: CORS_HEADERS
 			});
 		}
+
+		// // Initialize Twitter endpoints handler
+		// const twitterEndpoints = new TwitterEndpoints(null, env);
+		// const twitterResponse = await twitterEndpoints.handleRequest(request, path);
+		// if (twitterResponse) {
+		// 	return twitterResponse;
+		// }
 
 		// Get DO instance (one global instance for the registry)
 		const id = env.WORLD_REGISTRY.idFromName("global");
@@ -2691,10 +3145,10 @@ export default {
 			const bodyText = await request.text();
 			const body = JSON.parse(bodyText);
 			const applicationId = body.application_id;
-			
+
 			// Get DO instance with specific app ID
 			const bot = getDiscordBot(env, applicationId);
-		
+
 			// Create new request with the same body
 			const newRequest = new Request('http://internal/interactions', {
 				method: 'POST',
@@ -2705,11 +3159,11 @@ export default {
 				},
 				body: bodyText
 			});
-			
+
 			return bot.fetch(newRequest);
 		}
-		
-								
+
+
 		if (path === '/request-key-roll' && request.method === "POST") {
 
 			const { username, email } = await request.json();
@@ -2729,25 +3183,37 @@ export default {
 			return await auth.fetch(internalRequest);
 		}
 
-		// // Handle preflight requests
-		if (request.method === 'OPTIONS') {
-			return this.handleOptions(request);
-		}
-
 		// Authenticate non-GET requests (except certain public endpoints)
 		if (request.method !== 'GET' && ![
 			'/search',
 			'/initiate-key-roll',
 			'/verify-key-roll',
+			'/api/character/',
 			'/api/character/chat-message',
 			'/api/character/message',
+			'/migrate-character-schema',
 			'/api/character/session',
+			'/api/character/asset-upload-chunk',
+			'/api/character/asset-upload-complete',
+			'/api/character/get-character-assets',
+			'/api/character/delete-asset',
+			'/api/character/update-asset-metadata',
+			'/api/character/handle-asset-thumbnail-upload',
 			'/featured-characters',
 			'/discord/init',
 			'/discord/check',
 			'/discord/interactions',
 			'/interactions',
 			'/memory-list',
+			'/migrate-schema',
+			'/api/character/backup-list',
+			'/api/character/download-backup',
+			'/api/character/generate-prompt',
+			'/api/character/generate-plan',
+			'/api/character/get-plan',
+			'/api/user/settings/migrate',
+			'/api/user/settings',
+			'/api/user/settings/update',
 			'/init',
 			'/check'
 		].includes(path)) {
@@ -2772,6 +3238,68 @@ export default {
 					case '/get-world': {
 						return await this.handleGetWorld(request, env);
 					}
+					case '/api/character': {
+						try {
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+								});
+							}
+
+							const url = new URL(request.url);
+							const author = url.searchParams.get('author');
+							const slug = url.searchParams.get('slug');
+
+							if (!author || !slug) {
+								return new Response(JSON.stringify({ error: 'Missing author or slug parameter' }), {
+									status: 400,
+									headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+								});
+							}
+
+							const [, apiKey] = authHeader.split(' ');
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, author, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							const response = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author, slug })
+							}));
+
+							if (!response.ok) {
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+								});
+							}
+
+							return new Response(await response.text(), {
+								headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+							});
+						} catch (error) {
+							console.error('Get character error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+							});
+						}
+					}
+					case '/api/character/backup-list': {
+						return await this.handleListBackups(request, env);
+					}
 					case 'get-world-data': {
 						return await this.handleGetWorldData(request, env);
 					}
@@ -2789,6 +3317,9 @@ export default {
 					}
 					case '/memory-list': {
 						return await this.handleMemoryList(request, env);
+					}
+					case '/api/character/download-backup': {
+						return await this.handleDownloadBackup(request, env);
 					}
 					case '/visit-count': {
 						return this.getVisitCount(request, env);
@@ -2855,6 +3386,38 @@ export default {
 					case '/author-characters': {
 						return this.handleGetAuthorCharacters(request, env);
 					}
+					case '/api/user/settings': {
+						const { username, id, success } = await this.authenticateRequest(request, env);
+						if (!success) {
+							return new Response(JSON.stringify({ error: 'Unauthorized' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
+							});
+						}
+
+						const authId = env.USER_AUTH.idFromName("global");
+						const auth = env.USER_AUTH.get(authId);
+
+						console.log("username is", username);
+						
+						const response = await auth.fetch(new Request('http://internal/get-user-settings', {
+							method: 'POST',
+							headers: {
+								'Content-Type': 'application/json'
+							},
+							body: JSON.stringify({ username, id })
+						}));
+
+						const settings = await response.json();
+						return new Response(JSON.stringify(settings), {
+							headers: { 
+								'Content-Type': 'application/json',
+								'Access-Control-Allow-Origin': '*',
+								'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+								'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+							}
+						});
+					}
 					case '/websocket/': {
 						const channelId = path.split('/')[2];
 						const upgradeHeader = request.headers.get('Upgrade');
@@ -2866,6 +3429,38 @@ export default {
 						const bot = getDiscordBot(env);
 
 						return bot.fetch(request);
+					}
+					case '/featured-authors': {
+						if (request.method === "GET") {
+							try {
+								const authors = await this.getFeaturedAuthors(env);
+								return new Response(JSON.stringify(authors), {
+									headers: {
+										'Content-Type': 'application/json',
+										'Access-Control-Allow-Origin': '*',
+										'Access-Control-Allow-Methods': 'GET',
+										'Access-Control-Allow-Headers': 'Content-Type'
+									}
+								});
+							} catch (error) {
+								return new Response(JSON.stringify({
+									error: 'Failed to fetch featured authors',
+									details: error.message
+								}), {
+									status: 500,
+									headers: {
+										'Content-Type': 'application/json',
+										'Access-Control-Allow-Origin': '*'
+									}
+								});
+							}
+						}
+						return new Response('Method not allowed', { 
+							status: 405,
+							headers: {
+								'Access-Control-Allow-Origin': '*'
+							}
+						});
 					}
 					default: {
 						// Handle directory and author paths that need path parameter extraction
@@ -2891,18 +3486,18 @@ export default {
 							const clonedRequest = request.clone();
 							const bodyData = await clonedRequest.text();
 							let applicationId = 'default';
-					
+
 							try {
 								const jsonData = JSON.parse(bodyData);
 								applicationId = jsonData.applicationId || 'default';
 							} catch (e) {
 								console.error('Failed to parse JSON from init request:', e);
 							}
-					
+
 							// Remove this line since it's redundant with getDiscordBot
 							// const id = env.DISCORD_BOTS.idFromName(applicationId);
 							const bot = getDiscordBot(env, applicationId);
-					
+
 							// Create new request with the stored body data
 							return bot.fetch(new Request('http://internal/init', {
 								method: 'POST',
@@ -3013,14 +3608,14 @@ export default {
 						}
 					}
 					case '/api/character/memory': {
-						const { sessionId, memory } = await request.json();
+						const { sessionId, content, type, userId, userName, roomId, agentId, isUnique, importance_score } = await request.json();
 
 						const id = env.CHARACTER_REGISTRY.idFromName("global");
 						const registry = env.CHARACTER_REGISTRY.get(id);
 
 						const response = await registry.fetch(new Request('http://internal/create-memory', {
 							method: 'POST',
-							body: JSON.stringify({ sessionId, memory })
+							body: JSON.stringify({ sessionId, content, type, userId, userName, roomId, agentId, isUnique, importance_score })
 						}));
 
 						return new Response(await response.text(), {
@@ -3430,381 +4025,381 @@ export default {
 					}
 					case '/get-my-telegram-credentials': {
 						if (request.method !== 'POST') {
-						  return new Response('Method not allowed', { status: 405 });
+							return new Response('Method not allowed', { status: 405 });
 						}
 						try {
-						  const { userId, characterName } = await request.json();
-						  // Auth check
-						  const authHeader = request.headers.get('Authorization');
-						  if (!authHeader) {
-							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
-							  status: 401,
-							  headers: { ...CORS_HEADERS }
-							});
-						  }
-						  const [, apiKey] = authHeader.split(' ');
-						  // Verify API key and username match
-						  const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
-						  if (!isValid) {
-							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
-							  status: 401,
-							  headers: { ...CORS_HEADERS }
-							});
-						  }
-					  
-						  const id = env.CHARACTER_REGISTRY.idFromName("global");
-						  const registry = env.CHARACTER_REGISTRY.get(id);
-						  
-						  const charResponse = await registry.fetch(new Request('http://internal/get-character', {
-							method: 'POST',
-							body: JSON.stringify({ author: userId, slug: characterName })
-						  }));
-					  
-						  if (!charResponse.ok) {
-							console.error('Character lookup failed:', await charResponse.text());
-							return new Response(JSON.stringify({ error: 'Character not found' }), {
-							  status: 404,
-							  headers: { ...CORS_HEADERS }
-							});
-						  }
-												
-						  const character = await charResponse.json();
-						  const credResponse = await registry.fetch(new Request('http://internal/get-telegram-credentials', {
-							method: 'POST',
-							body: JSON.stringify({ characterId: character.id }),
-						  }));
-					  
-						  return new Response(await credResponse.text(), {
-							status: credResponse.status,
-							headers: { ...CORS_HEADERS }
-						  });
-						} catch (error) {
-						  console.error('Telegram credentials error:', error);
-						  return new Response(JSON.stringify({
-							error: 'Internal server error',
-							details: error.message
-						  }), {
-							status: 500,
-							headers: { ...CORS_HEADERS }
-						  });
-						}
-					  }
-					  case '/api/telegram/message': {
-						if (request.method !== 'POST') {
-						  return new Response('Method not allowed', { status: 405 });
-						}
-						try {
-						  const { userId, characterName, chatId, message, sessionId, roomId, nonce } = await request.json();
-						  const authHeader = request.headers.get('Authorization');
-						  if (!authHeader) {
-							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
-							  status: 401,
-							  headers: { ...CORS_HEADERS }
-							});
-						  }
-						  const [, apiKey] = authHeader.split(' ');
-					  
-						  const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
-						  if (!isValid) {
-							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
-							  status: 401,
-							  headers: { ...CORS_HEADERS }
-							});
-						  }
-					  
-						  const id = env.CHARACTER_REGISTRY.idFromName("global");
-						  const registry = env.CHARACTER_REGISTRY.get(id);
-					  
-						  const charResponse = await registry.fetch(new Request('http://internal/get-character', {
-							method: 'POST',
-							body: JSON.stringify({ author: userId, slug: characterName })
-						  }));
-					  
-						  if (!charResponse.ok) {
-							console.error('Character lookup failed:', await charResponse.text());
-							return new Response(JSON.stringify({ error: 'Character not found' }), {
-							  status: 404,
-							  headers: { ...CORS_HEADERS }
-							});
-						  }
-												
-						  const character = await charResponse.json();
-						  console.log('Character is:', character);
-						  return await registry.fetch(new Request('http://internal/telegram-message', {
-							method: 'POST',
-							body: JSON.stringify({
-							  characterId: character.id,
-							  chatId,
-							  message,
-							  sessionId,
-							  roomId,
-							  nonce
-							})
-						  }));
-						} catch (error) {
-						  console.error('Telegram message error:', error);
-						  return new Response(JSON.stringify({
-							error: 'Internal server error',
-							details: error.message
-						  }), {
-							status: 500,
-							headers: { ...CORS_HEADERS }
-						  });
-						}
-					  }
-					  
-					  case '/api/telegram/updates': {
-						if (request.method !== 'POST') {
-						  return new Response('Method not allowed', { status: 405 });
-						}
-						try {
-						  const { userId, characterName, sessionId, roomId, nonce } = await request.json();
-					  
-						  const character = await this.getCharacter(userId, characterName);
-						  if (!character) {
-							throw new Error('Character not found');
-						  }
-					  
-						  const secrets = await this.getCharacterSecrets(character.id);
-						  if (!secrets?.modelKeys?.telegram_token) {
-							throw new Error('Telegram credentials not found');
-						  }
-					  
-						  const { TelegramClient } = await import('./telegram-client/index.js');
-						  const client = new TelegramClient({
-							token: secrets.modelKeys.telegram_token
-						  });
-					  
-						  const updates = await client.getUpdates();
-						  const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
-					  
-						  return new Response(JSON.stringify({
-							updates,
-							nonce: newNonce
-						  }), {
-							headers: {
-							  'Content-Type': 'application/json',
-							  ...CORS_HEADERS
+							const { userId, characterName } = await request.json();
+							// Auth check
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
 							}
-						  });
-						} catch (error) {
-						  console.error('Telegram updates error:', {
-							message: error.message,
-							stack: error.stack,
-							type: error.constructor.name
-						  });
-					  
-						  return new Response(JSON.stringify({
-							error: 'Failed to fetch updates',
-							details: error.message
-						  }), {
-							status: error.message.includes('not found') ? 404 : 500,
-							headers: { ...CORS_HEADERS }
-						  });
-						}
-					  }
-					  
-					  case '/api/telegram/reply': {
-						if (request.method !== 'POST') {
-						  return new Response('Method not allowed', { status: 405 });
-						}
-						try {
-						  const { userId, characterName, messageId, replyText, chatId, sessionId, roomId, nonce } = await request.json();
-					  
-						  const character = await this.getCharacter(userId, characterName);
-						  if (!character) {
-							throw new Error('Character not found');
-						  }
-					  
-						  const secrets = await this.getCharacterSecrets(character.id);
-						  if (!secrets?.modelKeys?.telegram_token) {
-							throw new Error('Telegram credentials not found');
-						  }
-					  
-						  const { TelegramClient } = await import('./telegram-client/index.js');
-						  const client = new TelegramClient({
-							token: secrets.modelKeys.telegram_token
-						  });
-					  
-						  const result = await client.replyToMessage(chatId, messageId, replyText);
-						  const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
-					  
-						  return new Response(JSON.stringify({
-							message: result,
-							nonce: newNonce
-						  }), {
-							headers: { ...CORS_HEADERS }
-						  });
-						} catch (error) {
-						  console.error('Telegram reply error:', error);
-						  return new Response(JSON.stringify({
-							error: 'Failed to send reply',
-							details: error.message
-						  }), {
-							status: error.message.includes('not found') ? 404 : 500,
-							headers: { ...CORS_HEADERS }
-						  });
-						}
-					  }
-					  
-					  case '/api/telegram/edit': {
-						if (request.method !== 'POST') {
-						  return new Response('Method not allowed', { status: 405 });
-						}
-						try {
-						  const { userId, characterName, messageId, newText, chatId, sessionId, roomId, nonce } = await request.json();
-					  
-						  const character = await this.getCharacter(userId, characterName);
-						  if (!character) {
-							throw new Error('Character not found');
-						  }
-					  
-						  const secrets = await this.getCharacterSecrets(character.id);
-						  if (!secrets?.modelKeys?.telegram_token) {
-							throw new Error('Telegram credentials not found');
-						  }
-					  
-						  const { TelegramClient } = await import('./telegram-client/index.js');
-						  const client = new TelegramClient({
-							token: secrets.modelKeys.telegram_token
-						  });
-					  
-						  const result = await client.editMessage(chatId, messageId, newText);
-						  const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
-					  
-						  return new Response(JSON.stringify({
-							message: result,
-							nonce: newNonce
-						  }), {
-							headers: { ...CORS_HEADERS }
-						  });
-						} catch (error) {
-						  console.error('Telegram edit error:', error);
-						  return new Response(JSON.stringify({
-							error: 'Failed to edit message',
-							details: error.message
-						  }), {
-							status: error.message.includes('not found') ? 404 : 500,
-							headers: { ...CORS_HEADERS }
-						  });
-						}
-					  }
-					  
-					  case '/api/telegram/pin': {
-						if (request.method !== 'POST') {
-						  return new Response('Method not allowed', { status: 405 });
-						}
-						try {
-						  const { userId, characterName, messageId, chatId, sessionId, roomId, nonce } = await request.json();
-					  
-						  const character = await this.getCharacter(userId, characterName);
-						  if (!character) {
-							throw new Error('Character not found');
-						  }
-					  
-						  const secrets = await this.getCharacterSecrets(character.id);
-						  if (!secrets?.modelKeys?.telegram_token) {
-							throw new Error('Telegram credentials not found');
-						  }
-					  
-						  const { TelegramClient } = await import('./telegram-client/index.js');
-						  const client = new TelegramClient({
-							token: secrets.modelKeys.telegram_token
-						  });
-					  
-						  const result = await client.pinMessage(chatId, messageId);
-						  const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
-					  
-						  return new Response(JSON.stringify({
-							success: result,
-							nonce: newNonce
-						  }), {
-							headers: { ...CORS_HEADERS }
-						  });
-						} catch (error) {
-						  console.error('Telegram pin error:', error);
-						  return new Response(JSON.stringify({
-							error: 'Failed to pin message',
-							details: error.message
-						  }), {
-							status: error.message.includes('not found') ? 404 : 500,
-							headers: { ...CORS_HEADERS }
-						  });
-						}
-					  }
-					  case '/api/telegram/messages': {
-						if (request.method !== 'POST') {
-						  return new Response('Method not allowed', { status: 405 });
-						}
-						try {
-						  const { userId, characterName, chatId, sessionId, roomId, nonce } = await request.json();
-						  
-						  // Auth check
-						  const authHeader = request.headers.get('Authorization');
-						  if (!authHeader) {
-							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
-							  status: 401,
-							  headers: { ...CORS_HEADERS }
+							const [, apiKey] = authHeader.split(' ');
+							// Verify API key and username match
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author: userId, slug: characterName })
+							}));
+
+							if (!charResponse.ok) {
+								console.error('Character lookup failed:', await charResponse.text());
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const character = await charResponse.json();
+							const credResponse = await registry.fetch(new Request('http://internal/get-telegram-credentials', {
+								method: 'POST',
+								body: JSON.stringify({ characterId: character.id }),
+							}));
+
+							return new Response(await credResponse.text(), {
+								status: credResponse.status,
+								headers: { ...CORS_HEADERS }
 							});
-						  }
-						  const [, apiKey] = authHeader.split(' ');
-					  
-						  const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
-						  if (!isValid) {
-							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
-							  status: 401,
-							  headers: { ...CORS_HEADERS }
-							});
-						  }
-					  
-						  const id = env.CHARACTER_REGISTRY.idFromName("global");
-						  const registry = env.CHARACTER_REGISTRY.get(id);
-					  
-						  // Get character to verify it exists and get ID
-						  const charResponse = await registry.fetch(new Request('http://internal/get-character', {
-							method: 'POST', 
-							body: JSON.stringify({ author: userId, slug: characterName })
-						  }));
-					  
-						  if (!charResponse.ok) {
-							console.error('Character lookup failed:', await charResponse.text());
-							return new Response(JSON.stringify({ error: 'Character not found' }), {
-							  status: 404,
-							  headers: { ...CORS_HEADERS }
-							});
-						  }
-												
-						  const character = await charResponse.json();
-						  
-						  // Forward to internal handler
-						  const messagesResponse = await registry.fetch(new Request('http://internal/telegram-messages', {
-							method: 'POST',
-							body: JSON.stringify({
-							  characterId: character.id,
-							  chatId,
-							  sessionId,
-							  roomId, 
-							  nonce
-							})
-						  }));
-					  
-						  // Just return the response from CharacterRegistryDO which will include the nonce
-						  return new Response(await messagesResponse.text(), {
-							status: messagesResponse.status,
-							headers: { ...CORS_HEADERS }
-						  });
 						} catch (error) {
-						  console.error('Telegram messages error:', error);
-						  return new Response(JSON.stringify({
-							error: 'Internal server error',
-							details: error.message
-						  }), {
-							status: 500,
-							headers: { ...CORS_HEADERS }
-						  });
+							console.error('Telegram credentials error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
 						}
-					  }					  
-														  
+					}
+					case '/api/telegram/message': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, chatId, message, sessionId, roomId, nonce } = await request.json();
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author: userId, slug: characterName })
+							}));
+
+							if (!charResponse.ok) {
+								console.error('Character lookup failed:', await charResponse.text());
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const character = await charResponse.json();
+							console.log('Character is:', character);
+							return await registry.fetch(new Request('http://internal/telegram-message', {
+								method: 'POST',
+								body: JSON.stringify({
+									characterId: character.id,
+									chatId,
+									message,
+									sessionId,
+									roomId,
+									nonce
+								})
+							}));
+						} catch (error) {
+							console.error('Telegram message error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+
+					case '/api/telegram/updates': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, sessionId, roomId, nonce } = await request.json();
+
+							const character = await this.getCharacter(userId, characterName);
+							if (!character) {
+								throw new Error('Character not found');
+							}
+
+							const secrets = await this.getCharacterSecrets(character.id);
+							if (!secrets?.modelKeys?.telegram_token) {
+								throw new Error('Telegram credentials not found');
+							}
+
+							const { TelegramClient } = await import('./telegram-client/index.js');
+							const client = new TelegramClient({
+								token: secrets.modelKeys.telegram_token
+							});
+
+							const updates = await client.getUpdates();
+							const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
+
+							return new Response(JSON.stringify({
+								updates,
+								nonce: newNonce
+							}), {
+								headers: {
+									'Content-Type': 'application/json',
+									...CORS_HEADERS
+								}
+							});
+						} catch (error) {
+							console.error('Telegram updates error:', {
+								message: error.message,
+								stack: error.stack,
+								type: error.constructor.name
+							});
+
+							return new Response(JSON.stringify({
+								error: 'Failed to fetch updates',
+								details: error.message
+							}), {
+								status: error.message.includes('not found') ? 404 : 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+
+					case '/api/telegram/reply': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, messageId, replyText, chatId, sessionId, roomId, nonce } = await request.json();
+
+							const character = await this.getCharacter(userId, characterName);
+							if (!character) {
+								throw new Error('Character not found');
+							}
+
+							const secrets = await this.getCharacterSecrets(character.id);
+							if (!secrets?.modelKeys?.telegram_token) {
+								throw new Error('Telegram credentials not found');
+							}
+
+							const { TelegramClient } = await import('./telegram-client/index.js');
+							const client = new TelegramClient({
+								token: secrets.modelKeys.telegram_token
+							});
+
+							const result = await client.replyToMessage(chatId, messageId, replyText);
+							const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
+
+							return new Response(JSON.stringify({
+								message: result,
+								nonce: newNonce
+							}), {
+								headers: { ...CORS_HEADERS }
+							});
+						} catch (error) {
+							console.error('Telegram reply error:', error);
+							return new Response(JSON.stringify({
+								error: 'Failed to send reply',
+								details: error.message
+							}), {
+								status: error.message.includes('not found') ? 404 : 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+
+					case '/api/telegram/edit': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, messageId, newText, chatId, sessionId, roomId, nonce } = await request.json();
+
+							const character = await this.getCharacter(userId, characterName);
+							if (!character) {
+								throw new Error('Character not found');
+							}
+
+							const secrets = await this.getCharacterSecrets(character.id);
+							if (!secrets?.modelKeys?.telegram_token) {
+								throw new Error('Telegram credentials not found');
+							}
+
+							const { TelegramClient } = await import('./telegram-client/index.js');
+							const client = new TelegramClient({
+								token: secrets.modelKeys.telegram_token
+							});
+
+							const result = await client.editMessage(chatId, messageId, newText);
+							const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
+
+							return new Response(JSON.stringify({
+								message: result,
+								nonce: newNonce
+							}), {
+								headers: { ...CORS_HEADERS }
+							});
+						} catch (error) {
+							console.error('Telegram edit error:', error);
+							return new Response(JSON.stringify({
+								error: 'Failed to edit message',
+								details: error.message
+							}), {
+								status: error.message.includes('not found') ? 404 : 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+
+					case '/api/telegram/pin': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, messageId, chatId, sessionId, roomId, nonce } = await request.json();
+
+							const character = await this.getCharacter(userId, characterName);
+							if (!character) {
+								throw new Error('Character not found');
+							}
+
+							const secrets = await this.getCharacterSecrets(character.id);
+							if (!secrets?.modelKeys?.telegram_token) {
+								throw new Error('Telegram credentials not found');
+							}
+
+							const { TelegramClient } = await import('./telegram-client/index.js');
+							const client = new TelegramClient({
+								token: secrets.modelKeys.telegram_token
+							});
+
+							const result = await client.pinMessage(chatId, messageId);
+							const { nonce: newNonce } = await this.nonceManager.createNonce(roomId, sessionId);
+
+							return new Response(JSON.stringify({
+								success: result,
+								nonce: newNonce
+							}), {
+								headers: { ...CORS_HEADERS }
+							});
+						} catch (error) {
+							console.error('Telegram pin error:', error);
+							return new Response(JSON.stringify({
+								error: 'Failed to pin message',
+								details: error.message
+							}), {
+								status: error.message.includes('not found') ? 404 : 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+					case '/api/telegram/messages': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName, chatId, sessionId, roomId, nonce } = await request.json();
+
+							// Auth check
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							// Get character to verify it exists and get ID
+							const charResponse = await registry.fetch(new Request('http://internal/get-character', {
+								method: 'POST',
+								body: JSON.stringify({ author: userId, slug: characterName })
+							}));
+
+							if (!charResponse.ok) {
+								console.error('Character lookup failed:', await charResponse.text());
+								return new Response(JSON.stringify({ error: 'Character not found' }), {
+									status: 404,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const character = await charResponse.json();
+
+							// Forward to internal handler
+							const messagesResponse = await registry.fetch(new Request('http://internal/telegram-messages', {
+								method: 'POST',
+								body: JSON.stringify({
+									characterId: character.id,
+									chatId,
+									sessionId,
+									roomId,
+									nonce
+								})
+							}));
+
+							// Just return the response from CharacterRegistryDO which will include the nonce
+							return new Response(await messagesResponse.text(), {
+								status: messagesResponse.status,
+								headers: { ...CORS_HEADERS }
+							});
+						} catch (error) {
+							console.error('Telegram messages error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+
 					case '/get-my-twitter-credentials': {
 						if (request.method !== 'POST') {
 							return new Response('Method not allowed', { status: 405 });
@@ -4211,7 +4806,233 @@ export default {
 							});
 						}
 					}
+					case '/api/character/asset-upload-chunk': {
+						const { userId, ...requestData } = await request.json();
 
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/handle-asset-chunk-upload', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+					
+					case '/api/character/asset-upload-complete': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/handle-asset-upload-complete', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+					
+					case '/api/character/assets': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/get-character-assets', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+					
+					case '/api/character/delete-asset': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/delete-asset', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+					
+					case '/api/character/update-asset-metadata': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/update-asset-metadata', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+					
+					case '/api/character/asset-thumbnail-upload': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/handle-asset-thumbnail-upload', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
 					case '/api/twitter/post-with-media': {
 						if (request.method !== 'POST') {
 							return new Response('Method not allowed', { status: 405 });
@@ -4379,7 +5200,668 @@ export default {
 					case '/memory-list': {
 						return await this.handleMemoryList(request, env);
 					}
-					default: {
+					case '/api/character/export':
+					case '/export-character': {
+						try {
+							const { userId, characterName } = await request.json();
+							const characterRegistry = env.CHARACTER_REGISTRY.get(env.CHARACTER_REGISTRY.idFromName('default'));
+							const response = await characterRegistry.fetch(new Request('http://internal/export-character', {
+								method: 'POST',
+								headers: request.headers,
+								body: JSON.stringify({ userId, characterName })
+							}));
+							return response;
+						} catch (error) {
+							return new Response(JSON.stringify({ error: error.message }), {
+								status: 500,
+								headers: { 'Content-Type': 'application/json', ...corsHeaders() }
+							});
+						}
+					}
+					case '/api/character/import-new': {
+						try {
+							// Handle preflight request
+							if (request.method === 'OPTIONS') {
+								return new Response(null, {
+									status: 204,
+									headers: {
+										'Access-Control-Allow-Origin': '*',
+										'Access-Control-Allow-Methods': 'POST, OPTIONS',
+										'Access-Control-Allow-Headers': 'Content-Type, Authorization',
+										'Access-Control-Max-Age': '86400'
+									}
+								});
+							}
+
+							const body = await request.json();
+							const { userId, importData, characterData } = body;
+
+							// If we have importData, extract character from it
+							const rawCharacterData = characterData || (importData?.character ? importData.character : null);
+
+							if (!rawCharacterData) {
+								return new Response(JSON.stringify({
+									error: 'Missing character data',
+									details: 'Request must include either characterData or importData.character'
+								}), {
+									status: 400,
+									headers: {
+										'Content-Type': 'application/json',
+										'Access-Control-Allow-Origin': '*'
+									}
+								});
+							}
+
+							// Normalize field names to snake_case
+							const finalCharacterData = {
+								name: rawCharacterData.name,
+								model_provider: rawCharacterData.model_provider || rawCharacterData.modelProvider,
+								status: rawCharacterData.status || 'private',
+								bio: rawCharacterData.bio || '',
+								settings: rawCharacterData.settings || {},
+								vrm_url: rawCharacterData.vrm_url || rawCharacterData.vrmUrl,
+								profile_img: rawCharacterData.profile_img || rawCharacterData.profileImg,
+								banner_img: rawCharacterData.banner_img || rawCharacterData.bannerImg,
+								clients: rawCharacterData.clients || ['DIRECT'],
+								lore: rawCharacterData.lore || [],
+								topics: rawCharacterData.topics || [],
+								adjectives: rawCharacterData.adjectives || [],
+								messageExamples: rawCharacterData.messageExamples || [],
+								postExamples: rawCharacterData.postExamples || [],
+								style: rawCharacterData.style || { all: [], chat: [], post: [] },
+								wallets: rawCharacterData.wallets || { ETH: '0x0000000000000000000000000000000000000000' }
+							};
+
+							const characterRegistry = env.CHARACTER_REGISTRY.get(env.CHARACTER_REGISTRY.idFromName('default'));
+							const registryResponse = await characterRegistry.fetch(new Request('http://internal/import-new-character', {
+								method: 'POST',
+								headers: request.headers,
+								body: JSON.stringify({ userId, characterData: finalCharacterData })
+							}));
+
+							const responseData = await registryResponse.json();
+
+							return new Response(JSON.stringify(responseData), {
+								status: registryResponse.status,
+								headers: {
+									'Content-Type': 'application/json',
+									'Access-Control-Allow-Origin': '*',
+									'Access-Control-Allow-Methods': 'POST, OPTIONS',
+									'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+								}
+							});
+						} catch (error) {
+							return new Response(JSON.stringify({
+								error: 'Failed to import character',
+								details: error.message
+							}), {
+								status: 500,
+								headers: {
+									'Content-Type': 'application/json',
+									'Access-Control-Allow-Origin': '*',
+									'Access-Control-Allow-Methods': 'POST, OPTIONS',
+									'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+								}
+							});
+						}
+					}
+					case '/api/character/create-backup': {
+						return await this.handleCreateBackup(request, env);
+					}
+					case '/api/character/delete-backup': {
+						return await this.handleDeleteBackup(request, env);
+					}
+					case '/api/character/generate-prompt': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName } = await request.json();
+							
+							// Auth check
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+
+							return await registry.fetch(new Request('http://internal/generate-prompt', {
+								method: 'POST',
+								body: JSON.stringify({ userId, characterName })
+							}));
+						} catch (error) {
+							console.error('Generate prompt error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+					case '/api/character/generate-plan': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName } = await request.json();
+							
+							// Auth check
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+					
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+					
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+					
+							return await registry.fetch(new Request('http://internal/generate-plan', {
+								method: 'POST',
+								body: JSON.stringify({ userId, characterName })
+							}));
+						} catch (error) {
+							console.error('Generate plan error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+					
+					case '/api/character/get-plan': {
+						if (request.method !== 'POST') {
+							return new Response('Method not allowed', { status: 405 });
+						}
+						try {
+							const { userId, characterName } = await request.json();
+							
+							// Auth check
+							const authHeader = request.headers.get('Authorization');
+							if (!authHeader) {
+								return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+							const [, apiKey] = authHeader.split(' ');
+					
+							const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+							if (!isValid) {
+								return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+									status: 401,
+									headers: { ...CORS_HEADERS }
+								});
+							}
+					
+							const id = env.CHARACTER_REGISTRY.idFromName("global");
+							const registry = env.CHARACTER_REGISTRY.get(id);
+					
+							return await registry.fetch(new Request('http://internal/get-plan', {
+								method: 'POST',
+								body: JSON.stringify({ userId, characterName })
+							}));
+						} catch (error) {
+							console.error('Get plan error:', error);
+							return new Response(JSON.stringify({
+								error: 'Internal server error',
+								details: error.message
+							}), {
+								status: 500,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+					}
+					case '/api/character/verify-action': {
+                        const url = new URL(request.url);
+                        const token = url.searchParams.get('token');
+                        const isDenied = url.searchParams.get('deny') === 'true';
+
+                        if (!token) {
+                            return new Response(JSON.stringify({ error: 'Missing verification token' }), {
+                                status: 400,
+                                headers: { ...CORS_HEADERS }
+                            });
+                        }
+
+                        const id = env.CHARACTER_REGISTRY.idFromName("global");
+                        const registry = env.CHARACTER_REGISTRY.get(id);
+
+                        try {
+                            const response = await registry.fetch(new Request('http://internal/verify-action', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ token, isDenied })
+                            }));
+
+                            const result = await response.json();
+
+                            // Redirect to a success page
+                            return new Response(null, {
+                                status: 302,
+                                headers: {
+                                    'Location': `/verification-result?status=${result.status}&message=${encodeURIComponent(result.message)}`,
+                                    ...CORS_HEADERS
+                                }
+                            });
+                        } catch (error) {
+                            console.error('Verification error:', error);
+                            return new Response(JSON.stringify({
+                                error: 'Verification failed',
+                                details: error.message
+                            }), {
+                                status: 500,
+                                headers: { ...CORS_HEADERS }
+                            });
+                        }
+                    }
+					case '/api/user/settings/migrate': {
+						const id = env.USER_AUTH.idFromName("global");
+						const auth = env.USER_AUTH.get(id);
+
+						// Verify API key at the worker level
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader || authHeader !== `Bearer ${env.API_SECRET}`) {
+							return new Response(JSON.stringify({
+								error: 'Unauthorized'
+							}), { 
+								status: 401,
+								headers: {
+									'Content-Type': 'application/json',
+									...CORS_HEADERS
+								}
+							});
+						}
+
+						try {
+							const internalRequest = new Request('http://internal/migrate-user-settings', {
+								method: 'POST',
+								headers: {
+									'Content-Type': 'application/json',
+									'X-Admin-Secret': env.API_SECRET
+								},
+								body: JSON.stringify({ action: 'migrate' })
+							});
+
+							const response = await auth.fetch(internalRequest);
+							
+							if (!response.ok) {
+								const errorData = await response.json();
+								return new Response(JSON.stringify(errorData), {
+									status: response.status,
+									headers: {
+										'Content-Type': 'application/json',
+										...CORS_HEADERS
+									}
+								});
+							}
+
+							const result = await response.json();
+							return new Response(JSON.stringify(result), {
+								headers: {
+									'Content-Type': 'application/json',
+									...CORS_HEADERS
+								}
+							});
+						} catch (error) {
+							console.error('Migration error:', error);
+							return new Response(JSON.stringify({
+								error: 'Migration failed',
+								details: error.message
+							}), {
+								status: 500,
+								headers: {
+									'Content-Type': 'application/json',
+									...CORS_HEADERS
+								}
+							});
+						}
+					}
+					case '/api/user/settings/update': {
+						if (request.method === 'POST') {
+							const { username } = await this.authenticateRequest(request, env);
+							const { settings } = await request.json();
+							
+							if (settings.companion_slug) {
+								const charId = env.CHARACTER_REGISTRY.idFromName("global");
+								const charRegistry = env.CHARACTER_REGISTRY.get(charId);
+												try {
+									const companion = await charRegistry.fetch(new Request('http://internal/get-character', {
+										method: 'POST',
+										// headers: { 'Content-Type': 'application/json' },
+										body: JSON.stringify({ author: username, slug: settings.companion_slug })
+									}));
+									
+									if (!companion.ok) {
+										return new Response(JSON.stringify({
+											error: 'Invalid companion_slug. Character not found.'
+										}), {
+											status: 400,
+											headers: { 'Content-Type': 'application/json', ...CORS_HEADERS }
+										});
+									}
+								} catch (error) {
+									return new Response(JSON.stringify({
+										error: 'Failed to validate companion',
+										details: error.message
+									}), {
+										status: 500,
+										headers: { 'Content-Type': 'application/json', ...CORS_HEADERS }
+									});
+								}
+							}
+
+							if (settings.vrm_url && !settings.vrm_url.match(/^https?:\/\/.+\.vrm$/i)) {
+								return new Response(JSON.stringify({
+									error: 'Invalid VRM URL. Must be a URL ending in .vrm'
+								}), {
+									status: 400,
+									headers: { 'Content-Type': 'application/json', ...CORS_HEADERS }
+								});
+							}
+
+							const id = env.USER_AUTH.idFromName("global");
+							const auth = env.USER_AUTH.get(id);
+
+							const internalRequest = new Request('http://internal/update-user-settings', {
+								method: 'POST',
+								headers: {
+									'Content-Type': 'application/json'
+								},
+								body: JSON.stringify({ username, settings })
+							});
+
+							try {
+								const response = await auth.fetch(internalRequest);
+								const result = await response.json();
+
+								return new Response(JSON.stringify(result), {
+									status: response.status,
+									headers: {
+										'Content-Type': 'application/json',
+										...CORS_HEADERS
+									}
+								});
+							} catch (error) {
+								return new Response(JSON.stringify({
+									error: 'Settings update failed',
+									details: error.message
+								}), {
+									status: 500,
+									headers: {
+										'Content-Type': 'application/json',
+										...CORS_HEADERS
+									}
+								});
+							}
+						} else if (request.method === 'OPTIONS') {
+							return new Response(null, {
+								headers: {
+									...CORS_HEADERS,
+									'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+									'Access-Control-Allow-Headers': 'Content-Type, Authorization'
+								}
+							});
+						}
+						break;
+					}
+					case '/api/author/asset-upload-chunk': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/handle-author-asset-chunk-upload', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+
+					case '/api/author/asset-upload-complete': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/handle-author-asset-upload-complete', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+
+					case '/api/author/assets': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/get-author-assets', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+
+					case '/api/author/delete-asset': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/delete-author-asset', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+
+					case '/api/author/update-asset-metadata': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/update-author-asset-metadata', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+
+					case '/api/author/asset-thumbnail-upload': {
+						const { userId, ...requestData } = await request.json();
+
+						const authHeader = request.headers.get('Authorization');
+						if (!authHeader) {
+							return new Response(JSON.stringify({ error: 'Missing Authorization header' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+						const [, apiKey] = authHeader.split(' ');
+
+						const isValid = await this.verifyApiKeyAndUsername(apiKey, userId, env);
+						if (!isValid) {
+							return new Response(JSON.stringify({ error: 'Invalid API key or username mismatch' }), {
+								status: 401,
+								headers: { ...CORS_HEADERS }
+							});
+						}
+
+						const id = env.CHARACTER_REGISTRY.idFromName("global");
+						const registry = env.CHARACTER_REGISTRY.get(id);
+						const response = await registry.fetch(new Request('http://internal/handle-author-asset-thumbnail-upload', {
+							method: 'POST',
+							headers: request.headers,
+							body: JSON.stringify({ userId, ...requestData })
+						}));
+						
+						const responseData = await response.text();
+						return new Response(responseData, {
+							status: response.status,
+							headers: {
+								...CORS_HEADERS,
+								'Content-Type': 'application/json'
+							}
+						});
+					}
+				default: {
 						return new Response(JSON.stringify({ error: 'Invalid endpoint' }), {
 							status: 404,
 							headers: { ...CORS_HEADERS, 'Content-Type': 'application/json' }
@@ -4403,4 +5885,6 @@ export default {
 		});
 	}
 }
+
+
 

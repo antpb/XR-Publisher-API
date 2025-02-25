@@ -205,6 +205,42 @@ fi
 
 echo "Successfully created VISIT_COUNTS namespace with ID: $VISIT_COUNTS_id"
 
+# Create TOKEN_PRICE_KV namespace
+echo "Creating TOKEN_PRICE_KV namespace..."
+TOKEN_PRICE_output=$(npx wrangler kv:namespace create "TOKEN_PRICE_KV" 2>&1)
+if [[ $TOKEN_PRICE_output == *"Error"* ]]; then
+    echo "Error creating TOKEN_PRICE_KV namespace: $TOKEN_PRICE_output"
+    exit 1
+fi
+
+TOKEN_PRICE_id=$(echo "$TOKEN_PRICE_output" | grep 'id = "' | sed 's/.*id = "\([^"]*\)".*/\1/')
+
+if [ -z "$TOKEN_PRICE_id" ]; then
+    echo "Error: Failed to extract TOKEN_PRICE_KV ID"
+    echo "Debug output: $TOKEN_PRICE_output"
+    exit 1
+fi
+
+echo "Successfully created TOKEN_PRICE_KV namespace with ID: $TOKEN_PRICE_id"
+
+# Create CHARACTER_PLANS namespace
+echo "Creating CHARACTER_PLANS namespace..."
+CHARACTER_PLANS_output=$(npx wrangler kv:namespace create "CHARACTER_PLANS" 2>&1)
+if [[ $CHARACTER_PLANS_output == *"Error"* ]]; then
+    echo "Error creating CHARACTER_PLANS namespace: $CHARACTER_PLANS_output"
+    exit 1
+fi
+
+CHARACTER_PLANS_id=$(echo "$CHARACTER_PLANS_output" | grep 'id = "' | sed 's/.*id = "\([^"]*\)".*/\1/')
+
+if [ -z "$CHARACTER_PLANS_id" ]; then
+    echo "Error: Failed to extract CHARACTER_PLANS ID"
+    echo "Debug output: $CHARACTER_PLANS_output"
+    exit 1
+fi
+
+echo "Successfully created CHARACTER_PLANS namespace with ID: $CHARACTER_PLANS_id"
+
 # Collect additional configuration
 read -p "Enter your OpenAI API Key (press Enter to skip): " openai_api_key
 read -p "Enter your Anthropic API Key (press Enter to skip): " anthropic_api_key
@@ -228,7 +264,9 @@ type = "ESModule"
 globs = ["**/*.js"]
 
 kv_namespaces = [
-    { binding = "VISIT_COUNTS", id = "$VISIT_COUNTS_id" }
+    { binding = "VISIT_COUNTS", id = "$VISIT_COUNTS_id" },
+    { binding = "TOKEN_PRICE_KV", id = "$TOKEN_PRICE_id" },
+    { binding = "CHARACTER_PLANS", id = "$CHARACTER_PLANS_id" }
 ]
 
 [ai]
@@ -286,23 +324,57 @@ binding = "WORLD_BUCKET"
 bucket_name = "${project_name}-bucket"
 preview_bucket_name = "${project_name}-bucket-preview"
 
+[[r2_buckets]]
+binding = "CHARACTER_BACKUPS"
+bucket_name = "${project_name}-character-backups"
+preview_bucket_name = "${project_name}-character-backups-preview"
+
+[[r2_buckets]]
+binding = "ITEMS_BUCKET"
+bucket_name = "${project_name}-items"
+preview_bucket_name = "${project_name}-items-preview"
+
 [env.production]
 vars = { ENVIRONMENT = "production" }
+
+kv_namespaces = [
+    { binding = "VISIT_COUNTS", id = "$VISIT_COUNTS_id" },
+    { binding = "TOKEN_PRICE_KV", id = "$TOKEN_PRICE_id" },
+    { binding = "CHARACTER_PLANS", id = "$CHARACTER_PLANS_id" }
+]
 EOL
 
 echo "Created final wrangler.toml with all configurations"
 
 # Create R2 bucket and set CORS rules (unchanged)
-echo "Creating R2 bucket..."
+echo "Creating R2 buckets..."
+
+# Create main world bucket
 output=$(npx wrangler r2 bucket create "${project_name}-bucket" 2>&1)
 if [[ $output != *"Created bucket"* ]]; then
-    echo "Error creating R2 bucket: $output"
+    echo "Error creating main R2 bucket: $output"
     exit 1
 fi
-echo "R2 bucket created successfully."
+echo "Main R2 bucket created successfully."
 
-# Set CORS rules for the R2 bucket
-echo "Setting CORS rules for the R2 bucket..."
+# Create character backups bucket
+output=$(npx wrangler r2 bucket create "${project_name}-character-backups" 2>&1)
+if [[ $output != *"Created bucket"* ]]; then
+    echo "Error creating character backups R2 bucket: $output"
+    exit 1
+fi
+echo "Character backups R2 bucket created successfully."
+
+# Create items bucket
+output=$(npx wrangler r2 bucket create "${project_name}-items" 2>&1)
+if [[ $output != *"Created bucket"* ]]; then
+    echo "Error creating items R2 bucket: $output"
+    exit 1
+fi
+echo "Items R2 bucket created successfully."
+
+# Set CORS rules for the main bucket
+echo "Setting CORS rules for the buckets..."
 cat > cors-rules.json << EOL
 {
   "cors_rules": [
@@ -316,12 +388,27 @@ cat > cors-rules.json << EOL
 }
 EOL
 
+# Apply CORS rules to both buckets
 output=$(npx wrangler r2 bucket cors put "${project_name}-bucket" --rules ./cors-rules.json 2>&1)
 if [[ $output == *"Error"* ]]; then
-    echo "Error setting CORS rules: $output"
+    echo "Error setting CORS rules for main bucket: $output"
     exit 1
 fi
-echo "CORS rules set successfully."
+
+output=$(npx wrangler r2 bucket cors put "${project_name}-character-backups" --rules ./cors-rules.json 2>&1)
+if [[ $output == *"Error"* ]]; then
+    echo "Error setting CORS rules for character backups bucket: $output"
+    exit 1
+fi
+
+# Apply CORS rules to items bucket
+output=$(npx wrangler r2 bucket cors put "${project_name}-items" --rules ./cors-rules.json 2>&1)
+if [[ $output == *"Error"* ]]; then
+    echo "Error setting CORS rules for items bucket: $output"
+    exit 1
+fi
+
+echo "CORS rules set successfully for all buckets."
 
 # Rest of the setup (API secrets, deployment, etc.)
 api_secret=$(generate_random_string 32)
