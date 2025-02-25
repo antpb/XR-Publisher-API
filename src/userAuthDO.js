@@ -3,14 +3,14 @@ export class UserAuthDO {
 		this.state = state;
 		this.env = env;
 		this.sql = state.storage.sql;  // This is correct
-		
+
 		if (!env.USER_KEY_SALT) {
 			throw new Error('Missing required secret: USER_KEY_SALT');
 		}
-	
+
 		this.initializeSchema();
 	}
-		
+
 	async initializeSchema() {
 		try {
 			await this.sql.exec(`
@@ -76,11 +76,11 @@ export class UserAuthDO {
 	async migrateUserSettings() {
 		try {
 			const columns = await this.sql.exec("PRAGMA table_info(user_settings)").toArray();
-			
+
 			if (!columns.some(col => col.name === 'companion_slug')) {
 				await this.sql.exec("ALTER TABLE user_settings ADD COLUMN companion_slug TEXT");
 			}
-			
+
 			if (!columns.some(col => col.name === 'vrm_url')) {
 				await this.sql.exec("ALTER TABLE user_settings ADD COLUMN vrm_url TEXT");
 			}
@@ -149,33 +149,33 @@ export class UserAuthDO {
 					extras = ?,
 					private_extras = ?,
 					updated_at = unixepoch()
-			`, 
-			username,
-			settings.telegram_chat_id,
-			settings.telegram_username,
-			settings.verification_enabled ? 1 : 0,
-			settings.auto_approve_low_risk ? 1 : 0,
-			settings.companion_slug,
-			settings.vrm_url,
-			settings.display_name,
-			settings.status,
-			settings.profile_img,
-			settings.banner_img,
-			settings.extras || '{}',
-			settings.private_extras || '{}',
-			// Repeat values for UPDATE part
-			settings.telegram_chat_id,
-			settings.telegram_username,
-			settings.verification_enabled ? 1 : 0,
-			settings.auto_approve_low_risk ? 1 : 0,
-			settings.companion_slug,
-			settings.vrm_url,
-			settings.display_name,
-			settings.status,
-			settings.profile_img,
-			settings.banner_img,
-			settings.extras || '{}',
-			settings.private_extras || '{}'
+			`,
+				username,
+				settings.telegram_chat_id,
+				settings.telegram_username,
+				settings.verification_enabled ? 1 : 0,
+				settings.auto_approve_low_risk ? 1 : 0,
+				settings.companion_slug,
+				settings.vrm_url,
+				settings.display_name,
+				settings.status,
+				settings.profile_img,
+				settings.banner_img,
+				settings.extras || '{}',
+				settings.private_extras || '{}',
+				// Repeat values for UPDATE part
+				settings.telegram_chat_id,
+				settings.telegram_username,
+				settings.verification_enabled ? 1 : 0,
+				settings.auto_approve_low_risk ? 1 : 0,
+				settings.companion_slug,
+				settings.vrm_url,
+				settings.display_name,
+				settings.status,
+				settings.profile_img,
+				settings.banner_img,
+				settings.extras || '{}',
+				settings.private_extras || '{}'
 			);
 
 			return { success: true };
@@ -184,6 +184,89 @@ export class UserAuthDO {
 			throw error;
 		}
 	}
+
+	async handleGetFeaturedAuthors() {
+		try {
+		  console.log("Handling GET featured-authors request");
+		  
+		  // First get all users with their settings
+		  const authors = await this.sql.exec(`
+			SELECT 
+			  u.username,
+			  u.github_username,
+			  us.display_name,
+			  us.status,
+			  us.profile_img,
+			  us.banner_img,
+			  us.extras,
+			  us.companion_slug,
+			  us.vrm_url
+			FROM users u
+			JOIN user_settings us ON u.username = us.username
+			WHERE us.extras IS NOT NULL
+			ORDER BY u.created_at DESC
+		  `).toArray();
+	  
+		  console.log("Found total authors:", authors.length);
+	  
+		  // Filter authors to only include those with featured: true in their extras
+		  const processedAuthors = authors.reduce((featured, author) => {
+			let extras = {};
+			try {
+			  extras = JSON.parse(author.extras || '{}');
+			  // Only include this author if they have featured: true
+			  if (extras.featured === true) {
+				featured.push({
+				  username: author.username,
+				  github_username: author.github_username,
+				  display_name: author.display_name || author.username,
+				  status: author.status,
+				  profile_img: author.profile_img,
+				  banner_img: author.banner_img,
+				  companion_slug: author.companion_slug,
+				  vrm_url: author.vrm_url,
+				  ...extras
+				});
+			  }
+			} catch (e) {
+			  console.error(`Error parsing extras for author ${author.username}:`, e);
+			}
+			return featured;
+		  }, [{
+			"username": "antpb",
+			"github_username": "antpb",
+			"display_name": "antpb",
+			"status": "buildin...",
+			"profile_img": "https://pbs.twimg.com/profile_images/1865340701589811200/GBrkXZXt_400x400.jpg",
+			"banner_img": "https://pbs.twimg.com/profile_banners/205894419/1640718159/1500x500",
+			"companion_slug": "pixel",
+			"vrm_url": "https://items.sxp.digital/f8886983-a11b-4367-a19c-388662542d84/xrpublisherdefaultavatar.vrm"
+			}]);
+	  
+		  console.log("Found featured authors:", processedAuthors.length);
+	  
+		  return new Response(JSON.stringify(processedAuthors), {
+			headers: { 
+			  'Content-Type': 'application/json',
+			  'Access-Control-Allow-Origin': '*',
+			  'Access-Control-Allow-Methods': 'GET',
+			  'Access-Control-Allow-Headers': 'Content-Type'
+			}
+		  });
+		} catch (error) {
+		  console.error("Error in handleGetFeaturedAuthors:", error);
+		  return new Response(JSON.stringify({
+			error: 'Failed to fetch featured authors',
+			details: error.message
+		  }), {
+			status: 500,
+			headers: { 
+			  'Content-Type': 'application/json',
+			  'Access-Control-Allow-Origin': '*'
+			}
+		  });
+		}
+	  }
 
 	async getUserSettings(username) {
 		try {
@@ -302,18 +385,18 @@ export class UserAuthDO {
 				"SELECT 1 FROM users WHERE username = ?",
 				[username]
 			).toArray();
-	
+
 			if (existingUser.length > 0) {
 				throw new Error('Username already taken');
 			}
-	
+
 			if (!this.env.INVITE_CODE || inviteCode !== this.env.INVITE_CODE) {
 				throw new Error('Invalid invite code');
 			}
-	
+
 			const keyId = this.generateKeyId();
 			const keyHash = await this.generateApiKey(keyId);
-	
+
 			const query = `
 				INSERT INTO users (
 					username,
@@ -324,17 +407,17 @@ export class UserAuthDO {
 					invite_code_used,
 					created_at
 				) VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)`;
-	
+
 			// Pass each parameter individually
 			await this.sql.exec(query, username, github_username, email, keyId, keyHash, inviteCode);
-	
+
 			return { username, keyId, keyHash, apiKey: `${username}.${keyId}` };
 		} catch (error) {
 			console.error(error);
 			throw error;
 		}
 	}
-		async updateUserAsAdmin(username, updates) {
+	async updateUserAsAdmin(username, updates) {
 		try {
 			// Check if github_username column exists, add it if it doesn't
 			const columns = await this.sql.exec(`PRAGMA table_info(users)`).toArray();
@@ -431,13 +514,13 @@ export class UserAuthDO {
 				"DELETE FROM key_roll_verifications WHERE username = ?",
 				username
 			);
-	
+
 			// Then delete the user
 			const result = await this.sql.exec(
 				"DELETE FROM users WHERE username = ?",
 				username
 			);
-	
+
 			// Return success even if no user was found (idempotent delete)
 			return {
 				success: true,
@@ -447,7 +530,7 @@ export class UserAuthDO {
 			console.error("Error deleting user from auth database:", error);
 			throw new Error(`Failed to delete user from auth database: ${error.message}`);
 		}
-	}	
+	}
 
 	// Verify API key
 	async verifyApiKey(apiKey) {
@@ -463,7 +546,7 @@ export class UserAuthDO {
 				username, keyId, expectedHash
 			).one();
 
-			return {valid: !!user, username: username};
+			return { valid: !!user, username: username };
 		} catch (error) {
 			console.error("Error verifying API key:", error);
 			return false;
@@ -628,7 +711,15 @@ export class UserAuthDO {
 	// Handle incoming requests
 	async fetch(request) {
 		const url = new URL(request.url);
-
+		// Handle GET requests first
+		if (request.method === "GET") {
+			switch (url.pathname) {
+				case '/get-featured-authors': {
+					console.log("Handling GET featured-authors request");
+					return await this.handleGetFeaturedAuthors();
+				}
+			}
+		}
 		if (request.method === "POST") {
 			const body = await request.json();
 
@@ -650,7 +741,7 @@ export class UserAuthDO {
 							"SELECT * FROM users WHERE username = ?",
 							username
 						).toArray();
-						
+
 						console.log('User exists check:', userExists);
 
 						if (!userExists.length) {
@@ -677,7 +768,7 @@ export class UserAuthDO {
 							FROM user_settings
 							WHERE username = ?
 						`, username).toArray();
-						
+
 						console.log('Settings query result:', settings);
 
 						if (!settings.length) {
@@ -712,7 +803,7 @@ export class UserAuthDO {
 							`, username).toArray();
 
 							console.log('Newly created settings:', newSettings[0]);
-							
+
 							const defaultSettings = newSettings[0] || {
 								telegram_chat_id: null,
 								telegram_username: null,
@@ -733,7 +824,7 @@ export class UserAuthDO {
 							} catch (e) {
 								defaultSettings.extras = {};
 							}
-							
+
 							return new Response(JSON.stringify(defaultSettings), {
 								headers: { 'Content-Type': 'application/json' }
 							});
@@ -763,7 +854,7 @@ export class UserAuthDO {
 						}), { status: 500 });
 					}
 				}
-				
+
 				case '/get-user-private-settings': {
 					const { username, apiKey } = body;
 					if (!username || !apiKey) {
@@ -783,9 +874,9 @@ export class UserAuthDO {
 						}), { status: 401 });
 					}
 				}
-				
+
 				case '/create-user': {
-					const { username, inviteCode, github_username, email  } = body;
+					const { username, inviteCode, github_username, email } = body;
 					if (!username || !inviteCode) {
 						return new Response(JSON.stringify({
 							error: 'Missing required fields'
@@ -959,7 +1050,7 @@ export class UserAuthDO {
 								extras = ?,
 								private_extras = ?,
 								updated_at = unixepoch()
-						`, 
+						`,
 							username,
 							settings.telegram_chat_id || null,
 							settings.telegram_username || null,
