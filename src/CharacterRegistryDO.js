@@ -4504,7 +4504,7 @@ Style Guidelines:
 ${character.style?.all.map(style => `- ${style}`).join('\n')}
 ${character.style?.post.map(style => `- ${style}`).join('\n')}
 
-Task: Generate a topic for a tweet that would be interesting and relevant to your character's personality and interests. 
+Task: Generate a topic for a tweet that would be interesting and relevant to your character's personality and interests focusing on one aspecf of the characters bio. Dont take the obvious topics be varied. 
 The topic should be something you'd naturally want to discuss.
 Respond with just the topic in a single sentence, no additional commentary.`;
 
