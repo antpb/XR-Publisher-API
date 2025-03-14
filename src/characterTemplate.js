@@ -37,38 +37,54 @@ export default async function generateCharacterHTML(characterData, env) {
             crossorigin="anonymous"
         >
         <style>
-            body { background-color: #191919; color: white; }
+            body { 
+                background-color: #191919; 
+                color: white; 
+                margin: 0;
+                padding: 0;
+                overflow: hidden;
+                height: 100vh;
+                width: 100vw;
+            }
             .world-container { 
                 background: linear-gradient(to bottom right, #131313, #181818);
-                min-height: 80vh;
+                height: 100vh;
+                width: 100vw;
+                position: relative;
             }
             #world-view {
                 width: 100%;
                 height: 100%;
-                min-height: 80vh;
             }
-            .character-card-container { background: linear-gradient(to bottom right, #212020c9, #2c2c2cb5); }
-            .hero-card-container { background: linear-gradient(to top left, #8e34d7c4, #30d3669b); }
+            .header-bar {
+                position: absolute;
+                top: 0;
+                left: 0;
+                width: 100%;
+                z-index: 10;
+                pointer-events: none;
+            }
+            .header-bar a, .header-bar input, .header-bar button {
+                pointer-events: auto;
+            }
         </style>
     </head>
     <body>
-        <div class="absolute top-0 left-0 w-full z-10" style="pointer-events: none;">
-            <div class="min-h-screen bg-[#191919] text-white">
-                <div class="w-full mx-auto px-4 py-2 flex items-center justify-between">
-                    <a href="/" class="mr-4">
-                        <img src="/xrpublisher-logo-300x70.png" alt="Logo" class="h-8 inline-block" style="pointer-events: auto;">
+        <div class="header-bar">
+            <div class="w-full mx-auto px-4 py-2 flex items-center justify-between">
+                <a href="/" class="mr-4">
+                    <img src="/xrpublisher-logo-300x70.png" alt="Logo" class="h-8 inline-block">
+                </a>
+                <div class="flex items-center space-x-4">
+                    <a href="/author/${safeCharacter.author}" class="text-white hover:text-gray-200">
+                        <img src="${safeCharacter.authorData?.avatar_url || '/default-avatar.jpg'}" 
+                            alt="${safeCharacter.author}" 
+                            class="w-10 h-10 rounded-full inline-block mr-2">
+                        ${safeCharacter.author}
                     </a>
-                    <div class="flex items-center space-x-4">
-                        <a href="/author/${safeCharacter.author}" class="text-white hover:text-gray-200">
-                            <img src="${safeCharacter.authorData?.avatar_url || '/default-avatar.jpg'}" 
-                                alt="${safeCharacter.author}" 
-                                class="w-10 h-10 rounded-full inline-block mr-2">
-                            ${safeCharacter.author}
-                        </a>
-                        <span class="text-white/80">presents</span>
-                        <h1 class="text-xl font-bold">${safeCharacter.name}</h1>
-                        ${createHeaderSearchBar()}
-                    </div>
+                    <span class="text-white/80">presents</span>
+                    <h1 class="text-xl font-bold">${safeCharacter.name}</h1>
+                    ${createHeaderSearchBar()}
                 </div>
             </div>
         </div>
@@ -100,56 +116,6 @@ export default async function generateCharacterHTML(characterData, env) {
                         objectawareness="0">
                     </three-npc-block>
                 </three-environment-block>
-            </div>
-        </div>
-
-        <div class="container mx-auto px-4 py-8">
-            <div class="character-card-container rounded-lg p-6 shadow-lg">
-                <h2 class="text-xl font-bold mb-4">About ${safeCharacter.name}</h2>
-                
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-8 mb-6">
-                    <div>
-                        <h3 class="text-lg font-semibold mb-2 text-purple-400">Background</h3>
-                        <ul class="space-y-2">
-                            ${safeCharacter.lore.map(item => 
-                                `<li class="text-gray-300">• ${item}</li>`
-                            ).join('')}
-                        </ul>
-                    </div>
-                    
-                    <div>
-                        <h3 class="text-lg font-semibold mb-2 text-blue-400">Topics & Expertise</h3>
-                        <div class="flex flex-wrap gap-2">
-                            ${safeCharacter.topics.map(topic =>
-                                `<span class="px-3 py-1 bg-gradient-to-br from-purple-600 to-blue-500 rounded-full text-sm">
-                                    ${topic}
-                                </span>`
-                            ).join('')}
-                        </div>
-                    </div>
-                </div>
-
-                <div class="mb-6">
-                    <h3 class="text-lg font-semibold mb-2 text-green-400">Personality Traits</h3>
-                    <div class="flex flex-wrap gap-2">
-                        ${safeCharacter.adjectives.map(adj =>
-                            `<span class="px-3 py-1 bg-gradient-to-br from-purple-600 to-blue-500 rounded-full text-sm">
-                                ${adj}
-                            </span>`
-                        ).join('')}
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <div class="bg-black py-8">
-            <div class="container mx-auto px-4 text-center text-gray-400">
-                <p>&copy; ${new Date().getFullYear()} World Publisher</p>
-                <div class="mt-2">
-                    <a href="/terms" class="text-purple-400 hover:underline mr-4">Terms</a>
-                    <a href="/privacy" class="text-purple-400 hover:underline mr-4">Privacy</a>
-                    <a href="https://github.com/your-repo" class="text-purple-400 hover:underline">GitHub</a>
-                </div>
             </div>
         </div>
 
